@@ -173,11 +173,69 @@ fn transform_line(line: &str) -> String {
     line.to_string()
 }
 
+/// Lines inside `struct Name { ... }` where **GLSL 3.30 does not allow member initializers** (`vec3 a = …`).
+/// [`transform_line`] must not run on those member declarations.
+fn zeroinit_skip_inside_struct_body(lines: &[&str]) -> Vec<bool> {
+    let mut skip = vec![false; lines.len()];
+    let mut i = 0usize;
+    while i < lines.len() {
+        if !lines[i].trim_start().starts_with("struct ") {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < lines.len() && !lines[j].contains('{') {
+            j += 1;
+        }
+        if j >= lines.len() {
+            i += 1;
+            continue;
+        }
+        let mut depth = 0i32;
+        let mut k = j;
+        loop {
+            if k >= lines.len() {
+                break;
+            }
+            let before = depth;
+            for c in lines[k].chars() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if before >= 1 {
+                skip[k] = true;
+            }
+            k += 1;
+            if depth == 0 && k > j {
+                break;
+            }
+        }
+        i = k;
+    }
+    skip
+}
+
 pub fn preprocess_webgl_compat(source: &str) -> String {
     if !compat_zeroinit_enabled() {
         return source.to_string();
     }
-    source.lines().map(transform_line).collect::<Vec<_>>().join("\n")
+    let lines: Vec<&str> = source.lines().collect();
+    let skip = zeroinit_skip_inside_struct_body(&lines);
+    lines
+        .iter()
+        .enumerate()
+        .map(|(idx, line)| {
+            if skip[idx] {
+                line.to_string()
+            } else {
+                transform_line(line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn compact_for_define_match(line: &str) -> String {
@@ -718,6 +776,20 @@ mod tests {
     fn vec4_global() {
         let s = preprocess_webgl_compat("vec4 lights;");
         assert_eq!(s, "vec4 lights = vec4(0.0);");
+    }
+
+    #[test]
+    fn zeroinit_does_not_add_initializers_inside_struct() {
+        let src = "struct sdObject\n{\n    vec3 pos;\n    float rad;\n    int index;\n};\nvec3 global_p;\n";
+        let s = preprocess_webgl_compat(src);
+        assert!(
+            s.contains("vec3 pos;") && !s.contains("vec3 pos ="),
+            "GLSL 3.30 forbids struct member initializers: {s}"
+        );
+        assert!(
+            s.contains("vec3 global_p = vec3(0.0);"),
+            "globals still get zeroinit: {s}"
+        );
     }
 
     #[test]

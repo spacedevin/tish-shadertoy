@@ -1,3 +1,5 @@
+// iChannel1: textures/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0_5.png
+
 mat3 rotx(float a) { mat3 rot; rot[0] = vec3(1.0, 0.0, 0.0); rot[1] = vec3(0.0, cos(a), -sin(a)); rot[2] = vec3(0.0, sin(a), cos(a)); return rot; }
 mat3 roty(float a) { mat3 rot; rot[0] = vec3(cos(a), 0.0, sin(a)); rot[1] = vec3(0.0, 1.0, 0.0); rot[2] = vec3(-sin(a), 0.0, cos(a)); return rot; }
 mat3 rotz(float a) { mat3 rot; rot[0] = vec3(cos(a), -sin(a), 0.0); rot[1] = vec3(sin(a), cos(a), 0.0); rot[2] = vec3(0.0, 0.0, 1.0); return rot; }
@@ -210,7 +212,7 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
     rd *= roty(mouse.x);
     
     trace(rp, rd, fragColor);
-    fragColor = mix(fragColor, texture(iChannel1, rd * roty(3.14159 * 0.5)), 1.0 - fragColor.a);
+    fragColor = mix(fragColor, texture(iChannel1, (rd * roty(3.14159 * 0.5)).xy), 1.0 - fragColor.a);
     
     float luma = (fragColor.r + fragColor.g + fragColor.b) * 0.33;
     fragColor -= (luma) * vec4(.9, .5, .0, 1.) * clamp(rd.y - 0.05, 0.0, 1.0);
