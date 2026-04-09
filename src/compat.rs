@@ -418,17 +418,6 @@ pub fn auto_tanh_fragcolor_display_map_enabled() -> bool {
     )
 }
 
-/// Optional **`rgb` clamp to ≥ 0** after `mainImage` (before final write). **Opaque alpha** is always
-/// forced in the wrapper (`_tish_acc.a = 1.0`) so macOS default FB compositing never sees **a = 0**.
-///
-/// Disable rgb clamp with **`TISH_SHADER_COMPAT_OUTPUT_TAIL=0`** if it crushes valid signed ranges.
-pub fn frag_output_tail_enabled() -> bool {
-    !matches!(
-        std::env::var("TISH_SHADER_COMPAT_OUTPUT_TAIL").as_deref(),
-        Ok("0" | "false" | "off")
-    )
-}
-
 fn first_ident_in_decl_segment(seg: &str) -> Option<&str> {
     let seg = seg.trim();
     if seg.is_empty() {
@@ -544,9 +533,27 @@ pub fn collect_float_declared_names(source: &str) -> HashSet<String> {
     out
 }
 
+/// After `++` (postfix) or after `++ident` (prefix), true if a comparison follows (`<`, `<=`, `!=`, …).
+/// Excludes shift `<<` / `>>` so `i++ << 2` is not treated as comparison.
+fn comparison_follows(bytes: &[u8], mut pos: usize) -> bool {
+    while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+        pos += 1;
+    }
+    if pos >= bytes.len() {
+        return false;
+    }
+    match bytes[pos] {
+        b'<' => !(pos + 1 < bytes.len() && bytes[pos + 1] == b'<'),
+        b'>' => !(pos + 1 < bytes.len() && bytes[pos + 1] == b'>'),
+        b'=' => pos + 1 < bytes.len() && bytes[pos + 1] == b'=',
+        b'!' => pos + 1 < bytes.len() && bytes[pos + 1] == b'=',
+        _ => false,
+    }
+}
+
 fn rewrite_postfix_float_pp(line: &str, float_names: &HashSet<String>) -> String {
     let bytes = line.as_bytes();
-    let mut out = String::with_capacity(line.len() + 8);
+    let mut out = String::with_capacity(line.len() + 24);
     let mut start = 0usize;
     let mut pos = 0usize;
     while pos < bytes.len() {
@@ -561,9 +568,18 @@ fn rewrite_postfix_float_pp(line: &str, float_names: &HashSet<String>) -> String
                 let ident = &line[s..end];
                 if float_names.contains(ident) && !is_prefix {
                     out.push_str(&line[start..s]);
-                    out.push_str(ident);
-                    out.push_str(" += 1.0");
-                    pos = end + 2;
+                    let after_pp = end + 2;
+                    if comparison_follows(bytes, after_pp) {
+                        // `i++ < x` must not become `i += 1.0 < x` → `i += (1.0 < x)` (bool).
+                        // Postfix value = old i = (i += 1.0) - 1.0 when += yields the new float.
+                        out.push_str("((");
+                        out.push_str(ident);
+                        out.push_str(" += 1.0) - 1.0)");
+                    } else {
+                        out.push_str(ident);
+                        out.push_str(" += 1.0");
+                    }
+                    pos = after_pp;
                     start = pos;
                     continue;
                 }
@@ -577,7 +593,7 @@ fn rewrite_postfix_float_pp(line: &str, float_names: &HashSet<String>) -> String
 
 fn rewrite_prefix_float_pp(line: &str, float_names: &HashSet<String>) -> String {
     let bytes = line.as_bytes();
-    let mut out = String::with_capacity(line.len() + 8);
+    let mut out = String::with_capacity(line.len() + 24);
     let mut start = 0usize;
     let mut i = 0usize;
     while i < bytes.len() {
@@ -596,8 +612,15 @@ fn rewrite_prefix_float_pp(line: &str, float_names: &HashSet<String>) -> String 
                     let ident = &line[id_start..j];
                     if float_names.contains(ident) {
                         out.push_str(&line[start..i]);
-                        out.push_str(ident);
-                        out.push_str(" += 1.0");
+                        if comparison_follows(bytes, j) {
+                            // `++i < x` → `(i += 1.0) < x` (prefix returns new i).
+                            out.push_str("(");
+                            out.push_str(ident);
+                            out.push_str(" += 1.0)");
+                        } else {
+                            out.push_str(ident);
+                            out.push_str(" += 1.0");
+                        }
                         i = j;
                         start = i;
                         continue;
@@ -723,6 +746,39 @@ mod tests {
         assert_eq!(out.matches("for (fragColor").count(), 1);
         assert!(
             out.contains("for (fragColor *= i; i < 20.0; i += 1.0)"),
+            "got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn float_pp_postfix_before_comparison_preserves_old_value() {
+        let src = "float i = 0.0;\n    for(; i++ < 128.;) {}\n";
+        let names = collect_float_declared_names(src);
+        let out = rewrite_float_post_increment(src, &names);
+        assert!(
+            out.contains("((i += 1.0) - 1.0) < 128."),
+            "i++ < x must not become i += 1.0 < x (bool): {out:?}"
+        );
+    }
+
+    #[test]
+    fn float_pp_prefix_before_comparison_parenthesizes() {
+        let src = "float i = 0.0;\n    for(; ++i < 128.;) {}\n";
+        let names = collect_float_declared_names(src);
+        let out = rewrite_float_post_increment(src, &names);
+        assert!(
+            out.contains("(i += 1.0) < 128."),
+            "++i < x must not become i += 1.0 < x: {out:?}"
+        );
+    }
+
+    #[test]
+    fn float_pp_postfix_shift_is_not_comparison() {
+        let src = "float i = 0.0;\n    x = i++ << 2;\n";
+        let names = collect_float_declared_names(src);
+        let out = rewrite_float_post_increment(src, &names);
+        assert!(
+            out.contains("i += 1.0") && !out.contains("((i += 1.0) - 1.0)"),
             "got: {out:?}"
         );
     }

@@ -172,12 +172,6 @@ fn build_fragment_source(user: &str) -> String {
     } else {
         ""
     };
-    let output_tail = if compat::frag_output_tail_enabled() {
-        r#"
-    _tish_acc.rgb = max(_tish_acc.rgb, vec3(0.0));"#
-    } else {
-        ""
-    };
     let auto_tanh_map = compat::auto_tanh_fragcolor_display_map_enabled()
         && (user.contains("fragColor = tanh(") || user.contains("fragColor=tanh("));
     let post_main_tanh_map = if auto_tanh_map {
@@ -202,6 +196,26 @@ fn build_fragment_source(user: &str) -> String {
     } else {
         "gl_FragCoord.xy"
     };
+    let force_opaque_alpha = !matches!(
+        std::env::var("TISH_SHADER_NO_FORCE_OPAQUE_ALPHA").as_deref(),
+        Ok("1" | "true" | "on")
+    );
+    let alpha_fix = if force_opaque_alpha {
+        r#"
+    _tish_acc.a = 1.0;"#
+    } else {
+        ""
+    };
+    if matches!(std::env::var("TISH_SHADER_DEBUG").as_deref(), Ok("1")) {
+        eprintln!(
+            "tish-shadertoy: FS inject: smoothstep_preamble={} tanh_shim={} tanh_remap={} force_a={} \
+             (smoothstep only applies if the shader calls smoothstep())",
+            !smooth.is_empty(),
+            !tanh_shim.is_empty(),
+            !post_main_tanh_map.is_empty(),
+            force_opaque_alpha,
+        );
+    }
     format!(
         r#"#version 330 core
 layout(location = 0) out vec4 _tish_ColorOut;
@@ -234,8 +248,7 @@ void main() {{
     // aliasing the same `out` with a function `out` parameter miscompiles on some GL drivers (e.g. Apple),
     // yielding all-black. Accumulate in a local, then assign once.
     vec4 _tish_acc = vec4(0.0, 0.0, 0.0, 1.0);
-    mainImage(_tish_acc, {mainimage_coord});{output_tail}{post_main_tanh_map}
-    _tish_acc.a = 1.0;
+    mainImage(_tish_acc, {mainimage_coord});{post_main_tanh_map}{alpha_fix}
     _tish_ColorOut = _tish_acc;
 }}
 "#,
@@ -243,8 +256,8 @@ void main() {{
         tanh_shim = tanh_shim,
         mat2_shim = mat2_shim,
         user = user,
-        output_tail = output_tail,
         post_main_tanh_map = post_main_tanh_map,
+        alpha_fix = alpha_fix,
         mainimage_coord = mainimage_coord,
     )
 }
@@ -300,6 +313,20 @@ mod built_fs_tests {
     }
 
     #[test]
+    fn fragment_never_injects_post_main_rgb_max() {
+        let _g = TEST_ENV_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let snippet = "void mainImage(out vec4 c, in vec2 u) { c = vec4(1.0); }";
+        let fs = super::build_fragment_source(snippet);
+        assert!(
+            !fs.contains("max(_tish_acc.rgb"),
+            "post-main max(rgb,0) was removed; it axes-splat signed HDR (e.g. flat red)"
+        );
+    }
+
+    #[test]
     fn seven_cf_gzn_rewrites_float_loop_and_for_line_sane() {
         let code = include_str!("../shaders/7cfGzn");
         let fs = super::build_fragment_source(code);
@@ -340,6 +367,10 @@ mod built_fs_tests {
         assert!(
             !fs.contains("clamp(_tish_acc.rgb * 0.5 + vec3(0.5)"),
             "TISH_SHADER_AUTO_TANH_MAP is opt-in; do not remap tanh output by default"
+        );
+        assert!(
+            !fs.contains("max(_tish_acc.rgb"),
+            "wrapper must not inject per-channel rgb clamp after mainImage"
         );
     }
 
@@ -839,8 +870,12 @@ impl ViewerApp {
             gl.disable(glow::STENCIL_TEST);
             gl.disable(glow::BLEND);
             gl.disable(glow::SCISSOR_TEST);
-            if matches!(
-                std::env::var("TISH_SHADER_DISABLE_FRAMEBUFFER_SRGB").as_deref(),
+            // Many drivers enable sRGB conversion for the default framebuffer; Shadertoy-style shaders
+            // usually output linear-ish color and expect UNORM storage without an extra encode pass.
+            // Leaving FRAMEBUFFER_SRGB on skews gamma and makes scenes look harsh/banded vs browser.
+            // Opt in with TISH_SHADER_FRAMEBUFFER_SRGB=1 if you want driver sRGB encoding on write.
+            if !matches!(
+                std::env::var("TISH_SHADER_FRAMEBUFFER_SRGB").as_deref(),
                 Ok("1" | "true" | "on")
             ) {
                 gl.disable(glow::FRAMEBUFFER_SRGB);
@@ -1025,8 +1060,8 @@ impl ViewerApp {
                 gl.disable(glow::STENCIL_TEST);
                 gl.disable(glow::BLEND);
                 gl.disable(glow::SCISSOR_TEST);
-                if matches!(
-                    std::env::var("TISH_SHADER_DISABLE_FRAMEBUFFER_SRGB").as_deref(),
+                if !matches!(
+                    std::env::var("TISH_SHADER_FRAMEBUFFER_SRGB").as_deref(),
                     Ok("1" | "true" | "on")
                 ) {
                     gl.disable(glow::FRAMEBUFFER_SRGB);
