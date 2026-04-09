@@ -40,6 +40,22 @@ The GL config picker prefers **no multisampling** (MSAA). The old behavior prefe
 
 Some shaders (e.g. IQ’s distance-function demos with **`AA 2`**) intentionally shade **2×2 supersampled** pixels — that is ~4× more work inside `mainImage`; lower `AA` in the file if you need speed.
 
+## Shadertoy compatibility and inputs
+
+The [Shadertoy site](https://www.shadertoy.com/) runs **WebGL** (GLSL ES). Shadertoy’s docs tell authors to [initialize variables](https://github.com/NatronGitHub/openfx-misc/blob/master/Shadertoy/Shadertoy.md) — the runtime does **not** inject zero for you. Many community shaders still rely on **undefined reads** behaving like zero on common browsers; **desktop OpenGL 3.3** often does not, which shows up as black or garbage.
+
+- **`TISH_SHADER_COMPAT_ZEROINIT`** — default **on**. A line-wise preprocessor adds `= 0` / `= vec4(0.0)` for common patterns (`vec4 lights;`, `float i,s,d;`, etc.). Set to **`0`** to disable if it breaks a shader.
+
+**Uniforms** (besides those listed under MVP): **`iChannelTime[4]`** ( **`0`** for slots backed by an image file, **`iTime`** for the default 1×1 slot — video/audio sync is not modeled yet), **`iFrameRate`** (smoothed from frame delta), plus the existing **`iChannelResolution`** from real texture sizes.
+
+**Texture inputs (`sampler2D` iChannel0–3)** — not automatic from Shadertoy JSON here; you wire files explicitly:
+
+- **`TISH_SHADER_CHANNEL_DIR`** — base directory for relative paths (default **`.`**).
+- **`TISH_SHADER_CHANNEL0`** … **`TISH_SHADER_CHANNEL3`** — filesystem paths to PNG/JPEG/GIF (override comments for that slot).
+- Or a line near the top of the shader: **`// iChannel0: relative/noise.png`** (same for 1–3). Env wins if both are set.
+
+**Not implemented** (would need parsing a full Shadertoy export or similar): buffer passes, cubemaps, keyboard/sound/mic inputs, remote texture URLs.
+
 ## Tish API (`tish:shadertoy`)
 
 - **`run(code)`** — opens the native viewer (blocks until the window closes).
@@ -50,8 +66,8 @@ The CLI script uses **`readFile`** from **`tish:fs`** to load the path you pass 
 
 - **Shadertoy preprocessor:** the viewer defines **`HW_PERFORMANCE`** to **`1`** when your shader does not (the website sets this; without it, `#if HW_PERFORMANCE==0` can fail to compile on desktop GL).
 - **Single full-screen fragment pass** — no buffer/sound multipass pipeline.
-- **iChannel0–3** are bound to **1×1 black** textures so simple shaders compile; real texture URLs / cubemaps are not loaded yet.
-- Uniforms include `iResolution`, `iTime`, `iTimeDelta`, `iFrame`, `iMouse`, `iDate`, `iSampleRate`, `iChannelResolution`, and `iGlobalTime` (alias of `iTime`). See the [VS Code Shader Toy extension](https://github.com/stevensona/shader-toy) for `mainImage` conventions.
+- **iChannel0–3** default to **1×1 black**; optional **image files** via env or `// iChannelN:` comments (see above). Cubemaps / buffer inputs / URLs are not supported.
+- Uniforms include `iResolution`, `iTime`, `iTimeDelta`, `iFrame`, `iMouse`, `iDate`, `iSampleRate`, `iChannelResolution`, `iChannelTime`, `iFrameRate`, and `iGlobalTime` (alias of `iTime`). See the [VS Code Shader Toy extension](https://github.com/stevensona/shader-toy) for `mainImage` conventions.
 
 ## License
 

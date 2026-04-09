@@ -1,5 +1,8 @@
 //! Native `tish:shadertoy` module: winit + glutin + glow fullscreen fragment viewer.
 
+mod channels;
+mod compat;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -40,13 +43,15 @@ void main() {
 "#;
 
 fn preprocess_user_code(src: &str) -> String {
-    src.lines()
+    let stripped: String = src
+        .lines()
         .filter(|line| {
             let t = line.trim_start();
             !(t.starts_with("#version") || t.starts_with("precision"))
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    compat::preprocess_webgl_compat(&stripped)
 }
 
 fn build_fragment_source(user: &str) -> String {
@@ -62,6 +67,8 @@ uniform vec4  iMouse;
 uniform vec4  iDate;
 uniform float iSampleRate;
 uniform vec3  iChannelResolution[4];
+uniform float iChannelTime[4];
+uniform float iFrameRate;
 uniform sampler2D iChannel0;
 uniform sampler2D iChannel1;
 uniform sampler2D iChannel2;
@@ -182,7 +189,13 @@ pub struct ViewerApp {
     loc_chan_res: Option<glow::UniformLocation>,
     /// OpenGL 3.3 core requires a bound VAO even when using `gl_VertexID` only.
     vao: Option<glow::VertexArray>,
-    dummy_textures: Vec<glow::Texture>,
+    /// iChannel0–3 (1×1 black or loaded image). `channel_file_loaded[i]` true when from disk.
+    channel_textures: Vec<glow::Texture>,
+    channel_file_loaded: [bool; 4],
+    channel_resolution_xy: [(f32, f32); 4],
+    loc_i_channel_time: Option<glow::UniformLocation>,
+    loc_i_frame_rate: Option<glow::UniformLocation>,
+    fps_ema: f32,
     start: Option<Instant>,
     last_frame: Option<Instant>,
     frame_idx: i32,
@@ -225,7 +238,12 @@ impl ViewerApp {
             loc_sample_rate: None,
             loc_chan_res: None,
             vao: None,
-            dummy_textures: Vec::new(),
+            channel_textures: Vec::new(),
+            channel_file_loaded: [false; 4],
+            channel_resolution_xy: [(1.0, 1.0); 4],
+            loc_i_channel_time: None,
+            loc_i_frame_rate: None,
+            fps_ema: 0.0,
             start: None,
             last_frame: None,
             frame_idx: -1,
@@ -299,6 +317,8 @@ impl ViewerApp {
             self.loc_date = gl.get_uniform_location(program, "iDate");
             self.loc_sample_rate = gl.get_uniform_location(program, "iSampleRate");
             self.loc_chan_res = gl.get_uniform_location(program, "iChannelResolution");
+            self.loc_i_channel_time = gl.get_uniform_location(program, "iChannelTime");
+            self.loc_i_frame_rate = gl.get_uniform_location(program, "iFrameRate");
             self.loc_frag_coord_scale = gl.get_uniform_location(program, "uFragCoordScale");
 
             let bfs = gl
@@ -335,23 +355,48 @@ impl ViewerApp {
             gl.bind_vertex_array(Some(vao));
             self.vao = Some(vao);
 
+            let paths = channels::merged_paths(&self.shader_source);
+            let base = channels::channel_base_dir();
             let mut tex = Vec::new();
-            for _ in 0..4 {
+            let mut file_loaded = [false; 4];
+            let mut ch_xy = [(1.0f32, 1.0f32); 4];
+
+            for i in 0..4 {
                 let t = gl
                     .create_texture()
                     .map_err(|e| format!("texture: {e}"))?;
                 gl.bind_texture(glow::TEXTURE_2D, Some(t));
-                gl.tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    glow::RGBA8 as i32,
-                    1,
-                    1,
-                    0,
-                    glow::RGBA,
-                    glow::UNSIGNED_BYTE,
-                    PixelUnpackData::Slice(Some(&[0u8, 0, 0, 255])),
-                );
+                if let Some(ref rel) = paths[i] {
+                    let full = base.join(rel);
+                    let (bytes, w, h) = channels::load_rgba8(&full).map_err(|e| {
+                        format!("iChannel{i} {}: {e}", full.display())
+                    })?;
+                    gl.tex_image_2d(
+                        glow::TEXTURE_2D,
+                        0,
+                        glow::RGBA8 as i32,
+                        w as i32,
+                        h as i32,
+                        0,
+                        glow::RGBA,
+                        glow::UNSIGNED_BYTE,
+                        PixelUnpackData::Slice(Some(&bytes)),
+                    );
+                    file_loaded[i] = true;
+                    ch_xy[i] = (w as f32, h as f32);
+                } else {
+                    gl.tex_image_2d(
+                        glow::TEXTURE_2D,
+                        0,
+                        glow::RGBA8 as i32,
+                        1,
+                        1,
+                        0,
+                        glow::RGBA,
+                        glow::UNSIGNED_BYTE,
+                        PixelUnpackData::Slice(Some(&[0u8, 0, 0, 255])),
+                    );
+                }
                 gl.tex_parameter_i32(
                     glow::TEXTURE_2D,
                     glow::TEXTURE_MIN_FILTER,
@@ -375,7 +420,9 @@ impl ViewerApp {
                 tex.push(t);
             }
             gl.bind_texture(glow::TEXTURE_2D, None);
-            self.dummy_textures = tex;
+            self.channel_textures = tex;
+            self.channel_file_loaded = file_loaded;
+            self.channel_resolution_xy = ch_xy;
         }
         Ok(())
     }
@@ -526,11 +573,29 @@ impl ViewerApp {
                 gl.uniform_1_f32(Some(loc), 44100.0);
             }
             if let Some(loc) = self.loc_chan_res.as_ref() {
-                let v = [1.0f32; 12];
+                let mut v = [0.0f32; 12];
+                for i in 0..4 {
+                    v[i * 3] = self.channel_resolution_xy[i].0;
+                    v[i * 3 + 1] = self.channel_resolution_xy[i].1;
+                    v[i * 3 + 2] = 1.0;
+                }
                 gl.uniform_3_f32_slice(Some(loc), &v);
             }
+            if let Some(loc) = self.loc_i_channel_time.as_ref() {
+                let ct: [f32; 4] = std::array::from_fn(|i| {
+                    if self.channel_file_loaded[i] {
+                        0.0
+                    } else {
+                        i_time
+                    }
+                });
+                gl.uniform_1_f32_slice(Some(loc), &ct);
+            }
+            if let Some(loc) = self.loc_i_frame_rate.as_ref() {
+                gl.uniform_1_f32(Some(loc), self.fps_ema);
+            }
 
-            for (unit, tex) in self.dummy_textures.iter().enumerate() {
+            for (unit, tex) in self.channel_textures.iter().enumerate() {
                 gl.active_texture(glow::TEXTURE0 + unit as u32);
                 gl.bind_texture(glow::TEXTURE_2D, Some(*tex));
                 let name = match unit {
@@ -562,6 +627,17 @@ impl ViewerApp {
             .unwrap_or(0.0);
         self.last_frame = Some(now);
         self.frame_idx = self.frame_idx.saturating_add(1);
+
+        let inst_fps = if i_time_delta > 1e-6 {
+            1.0 / i_time_delta
+        } else {
+            0.0
+        };
+        if self.fps_ema < 1e-3 {
+            self.fps_ema = inst_fps;
+        } else {
+            self.fps_ema = self.fps_ema * 0.92 + inst_fps * 0.08;
+        }
 
         let (mx, my) = self.mouse_xy;
         let (cx, cy) = self.mouse_click_xy;
@@ -874,7 +950,7 @@ impl Drop for ViewerApp {
                     if let Some(p) = self.program.take() {
                         gl.delete_program(p);
                     }
-                    for t in self.dummy_textures.drain(..) {
+                    for t in self.channel_textures.drain(..) {
                         gl.delete_texture(t);
                     }
                 }
