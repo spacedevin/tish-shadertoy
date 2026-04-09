@@ -445,6 +445,71 @@ fn first_ident_in_decl_segment(seg: &str) -> Option<&str> {
     }
 }
 
+/// First `for (...)` init clause on a line (between `(` after `for` and the first `;` at paren depth 1).
+fn first_for_loop_init_clause(line: &str) -> Option<&str> {
+    let idx = line.find("for")?;
+    let bytes = line.as_bytes();
+    let mut i = idx + 3;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= bytes.len() || bytes[i] != b'(' {
+        return None;
+    }
+    i += 1;
+    let start = i;
+    let mut depth = 1i32;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b';' if depth == 1 => {
+                return Some(line.get(start..i)?);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Identifiers introduced in a `for` init clause (`int i=0`, `int i=0, j=0`, …).
+/// Skips compound assignments (`fragColor *= i`) so we do not shadow [`rewrite_float_post_increment`].
+fn int_idents_from_for_init_clause(init: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for part in init.split(',') {
+        let p = part.trim_start();
+        if p.is_empty() {
+            continue;
+        }
+        let b = p.as_bytes();
+        if b.len() >= 3
+            && &b[0..3] == b"int"
+            && (b.len() == 3 || !is_ident_continue_byte(b[3]))
+        {
+            let rest = p.get(3..).unwrap_or("").trim_start();
+            let name = rest
+                .split(|c: char| c == '=' || c.is_whitespace())
+                .next()
+                .filter(|s| is_glsl_ident(s));
+            if let Some(n) = name {
+                out.insert(n.to_string());
+            }
+        } else if !p.contains("*=")
+            && !p.contains("+=")
+            && !p.contains("-=")
+            && !p.contains("/=")
+        {
+            // `int i=0, j=0` → second segment is ` j=0` (no `int` keyword).
+            let name = p.split('=').next().map(str::trim).filter(|s| is_glsl_ident(s));
+            if let Some(n) = name {
+                out.insert(n.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Names declared as `float` / `const float` on a line (skips function return types like `float foo(`).
 pub fn collect_float_declared_names(source: &str) -> HashSet<String> {
     let mut out = HashSet::new();
@@ -547,6 +612,10 @@ fn rewrite_prefix_float_pp(line: &str, float_names: &HashSet<String>) -> String 
 }
 
 /// Desktop GLSL allows `++` only on **int** scalars; Shadertoy often uses `float i; … i++`.
+///
+/// `collect_float_declared_names` is file-wide; a later `for (int m=…; m++)` must not rewrite `m++`
+/// when `float m` appeared earlier (e.g. IQ shaders). Drop names declared `int` in this line’s first
+/// `for ( … ;` init clause from the float set before `++` → `+= 1.0`.
 pub fn rewrite_float_post_increment(source: &str, float_names: &HashSet<String>) -> String {
     if !float_postincrement_enabled() {
         return source.to_string();
@@ -557,8 +626,16 @@ pub fn rewrite_float_post_increment(source: &str, float_names: &HashSet<String>)
             if line.trim_start().starts_with('#') {
                 return line.to_string();
             }
-            let s = rewrite_postfix_float_pp(line, float_names);
-            rewrite_prefix_float_pp(&s, float_names)
+            let int_shadow = first_for_loop_init_clause(line)
+                .map(int_idents_from_for_init_clause)
+                .unwrap_or_default();
+            let applicable: HashSet<String> = float_names
+                .iter()
+                .filter(|n| !int_shadow.contains(*n))
+                .cloned()
+                .collect();
+            let s = rewrite_postfix_float_pp(line, &applicable);
+            rewrite_prefix_float_pp(&s, &applicable)
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -648,6 +725,21 @@ mod tests {
             out.contains("for (fragColor *= i; i < 20.0; i += 1.0)"),
             "got: {out:?}"
         );
+    }
+
+    #[test]
+    fn float_pp_does_not_rewrite_int_loop_var_shadowing_float() {
+        let src = r#"float m = 1.0;
+    for( int m=ZERO; m<4; m++ ) { }
+"#;
+        let names = collect_float_declared_names(src);
+        assert!(names.contains("m"));
+        let out = rewrite_float_post_increment(src, &names);
+        assert!(
+            out.contains("for( int m=ZERO; m<4; m++ )"),
+            "int m++ must stay int: {out:?}"
+        );
+        assert!(!out.contains("m += 1.0"));
     }
 
     #[test]
