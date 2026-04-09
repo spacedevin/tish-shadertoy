@@ -355,7 +355,7 @@ impl ViewerApp {
             gl.bind_vertex_array(Some(vao));
             self.vao = Some(vao);
 
-            let paths = channels::merged_paths(&self.shader_source);
+            let paths = channels::resolved_channel_paths(&self.shader_source);
             let base = channels::channel_base_dir();
             let mut tex = Vec::new();
             let mut file_loaded = [false; 4];
@@ -367,10 +367,14 @@ impl ViewerApp {
                     .map_err(|e| format!("texture: {e}"))?;
                 gl.bind_texture(glow::TEXTURE_2D, Some(t));
                 if let Some(ref rel) = paths[i] {
-                    let full = base.join(rel);
-                    let (bytes, w, h) = channels::load_rgba8(&full).map_err(|e| {
-                        format!("iChannel{i} {}: {e}", full.display())
-                    })?;
+                    let (bytes, w, h) = if channels::is_builtin_noise_path(rel.as_path()) {
+                        channels::procedural_noise_rgba(256, 256)
+                    } else {
+                        let full = base.join(rel);
+                        channels::load_rgba8(&full).map_err(|e| {
+                            format!("iChannel{i} {}: {e}", full.display())
+                        })?
+                    };
                     gl.tex_image_2d(
                         glow::TEXTURE_2D,
                         0,
@@ -639,7 +643,12 @@ impl ViewerApp {
             self.fps_ema = self.fps_ema * 0.92 + inst_fps * 0.08;
         }
 
-        let (mx, my) = self.mouse_xy;
+        // Shadertoy: iMouse.xy are only valid while LMB is down; otherwise negative (see site / IQ notes).
+        let (mx, my) = if self.mouse_buttons.0 > 0.5 {
+            self.mouse_xy
+        } else {
+            (-1.0, -1.0)
+        };
         let (cx, cy) = self.mouse_click_xy;
 
         let local = chrono::Local::now();

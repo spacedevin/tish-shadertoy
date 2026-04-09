@@ -48,11 +48,14 @@ The [Shadertoy site](https://www.shadertoy.com/) runs **WebGL** (GLSL ES). Shade
 
 **Uniforms** (besides those listed under MVP): **`iChannelTime[4]`** ( **`0`** for slots backed by an image file, **`iTime`** for the default 1×1 slot — video/audio sync is not modeled yet), **`iFrameRate`** (smoothed from frame delta), plus the existing **`iChannelResolution`** from real texture sizes.
 
-**Texture inputs (`sampler2D` iChannel0–3)** — not automatic from Shadertoy JSON here; you wire files explicitly:
+**`iMouse` (Shadertoy rules)** — **`xy`** are the cursor in pixels **only while the left button is held**; when it is **up**, **`xy` are negative** (we use **`−1`**). **`zw`** carry the click position while dragging. Feeding live **`xy` all the time** breaks shaders that rotate with **`iMouse.x / iResolution.x`** (e.g. Alien Core / `4tcXRr`).
+
+**Texture inputs (`sampler2D` iChannel0–3)** — not automatic from Shadertoy JSON here; you wire files or built-ins:
 
 - **`TISH_SHADER_CHANNEL_DIR`** — base directory for relative paths (default **`.`**).
 - **`TISH_SHADER_CHANNEL0`** … **`TISH_SHADER_CHANNEL3`** — filesystem paths to PNG/JPEG/GIF (override comments for that slot).
 - Or a line near the top of the shader: **`// iChannel0: relative/noise.png`** (same for 1–3). Env wins if both are set.
+- **`// iChannel0: builtin:noise`** — procedural tiling grayscale noise (**256²**), similar to using a noise slot on the site. If **iChannel0** is unset and the source **calls** `texture(iChannel0,…)` / `textureLod` / `texelFetch`, we **auto-bind** this unless **`TISH_SHADER_AUTO_CHANNEL0_NOISE=0`**.
 
 **Not implemented** (would need parsing a full Shadertoy export or similar): buffer passes, cubemaps, keyboard/sound/mic inputs, remote texture URLs.
 
