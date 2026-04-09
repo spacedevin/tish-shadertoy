@@ -248,11 +248,9 @@ pub fn smoothstep_desktop_shim_enabled() -> bool {
 
 /// Rational `tanh` replacement for **extreme** magnitudes where some drivers return NaN (see `lib.rs`).
 ///
-/// **Default off:** native GLSL `tanh` matches Shadertoy/WebGL for typical tone-mapping (e.g. `7cfGzn`);
-/// the shim can skew or zero results on Apple/Metal for `vec4` finals.
-///
-/// Enable with **`TISH_SHADER_COMPAT_TANH=1`** when you need the workaround (e.g. huge intermediate
-/// values in shaders like `7cjGRR` / `scS3Wm`).
+/// **Default off:** uses the **GPU’s** `tanh`. Enable with **`TISH_SHADER_COMPAT_TANH=1`** to inject
+/// `tish_tanh` (rational form; **`vec4` preserves `.w`**). Use when you need NaN safety or to A/B the
+/// built-in curve; it does **not** reproduce “scale only” (`o/k/d` without `tanh`).
 pub fn tanh_desktop_shim_enabled() -> bool {
     matches!(
         std::env::var("TISH_SHADER_COMPAT_TANH").as_deref(),

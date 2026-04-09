@@ -80,5 +80,5 @@ void mainImage(out vec4 o, in vec2 u) {
         ref +=  lights + 1./max(s, .01);
 
     o += o*ref;
-    o = o / (6e6 * d);
+    o = tanh(o / 6e6 / d);
 }

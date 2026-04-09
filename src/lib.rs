@@ -110,9 +110,13 @@ vec4 tish_smoothstep(vec4 e0, vec4 e1, vec4 x) {
 #define smoothstep tish_smoothstep
 "#;
 
-/// Optional Brezinski-style `tanh` (**`TISH_SHADER_COMPAT_TANH=1`**). For **huge** inputs, built-in `tanh`
-/// can return NaN on some drivers; the rational form avoids that if `x` is clamped before `x*x`
-/// (see `shaders/scXSRf` / `tanh_approx`). **Default:** use native `tanh` so tone-maps match Shadertoy.
+/// Optional rational `tanh` (**`TISH_SHADER_COMPAT_TANH=1`**), **`#define tanh tish_tanh`**.
+///
+/// **Default (no env):** the **driver’s** built-in `tanh` — not a separate host implementation.
+/// “Oversaturation” vs using only `o/(k*d)` is usually the **tanh curve** (large inputs → ~±1), not a Metal bug.
+/// For **huge** inputs, built-in `tanh` can return NaN on some drivers; the rational form avoids that
+/// (see `shaders/scXSRf`). **`vec4`** passes **`.w` through** so tone-mapped finals don’t also warp alpha
+/// before the wrapper sets `a = 1`.
 const TANH_DESKTOP_SHIM: &str = r#"
 float tish_tanh(float x) {
     x = clamp(x, -80.0, 80.0);
@@ -126,7 +130,7 @@ vec3 tish_tanh(vec3 x) {
     return vec3(tish_tanh(x.x), tish_tanh(x.y), tish_tanh(x.z));
 }
 vec4 tish_tanh(vec4 x) {
-    return vec4(tish_tanh(x.x), tish_tanh(x.y), tish_tanh(x.z), tish_tanh(x.w));
+    return vec4(tish_tanh(x.x), tish_tanh(x.y), tish_tanh(x.z), x.w);
 }
 #define tanh tish_tanh
 "#;
