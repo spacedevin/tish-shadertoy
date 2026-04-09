@@ -1,0 +1,22 @@
+[package]
+name = "tish-shadertoy"
+version = "0.1.0"
+edition = "2021"
+description = "Shadertoy-style GLSL viewer: Tish CLI + native OpenGL window"
+license = "MIT"
+repository = "https://github.com/tishlang/tish-shadertoy"
+
+[[bin]]
+name = "tish-shadertoy-run"
+path = "src/bin/tish-shadertoy-run.rs"
+
+[dependencies]
+tishlang_core = { path = "../tish/crates/tish_core" }
+tishlang_eval = { path = "../tish/crates/tish_eval", features = ["process", "fs"] }
+tishlang_parser = { path = "../tish/crates/tish_parser" }
+winit = "0.30"
+glutin = "0.32"
+glutin-winit = "0.5"
+raw-window-handle = "0.6"
+glow = "0.16"
+chrono = "0.4"

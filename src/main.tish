@@ -1,0 +1,23 @@
+// CLI: cargo run --bin tish-shadertoy-run -- src/main.tish <path-to-glsl-file>
+
+import { readFile } from "tish:fs"
+import { process } from "tish:process"
+import { run } from "tish:shadertoy"
+
+fn die(msg) {
+  console.error(msg)
+  process.exit(1)
+}
+
+let argv = process.argv
+if (argv.length < 3) {
+  die("Usage: tish-shadertoy-run src/main.tish <shader-file>")
+}
+
+let path = argv[2]
+let code = readFile(path)
+if (code.startsWith("Error: ")) {
+  die(code)
+}
+
+run(code)

@@ -1,0 +1,10 @@
+{
+  "name": "tish-shadertoy",
+  "version": "0.1.0",
+  "description": "Shadertoy URL viewer for Tish (native OpenGL)",
+  "private": false,
+  "scripts": {
+    "build": "cargo build --bin tish-shadertoy-run",
+    "start": "cargo run --bin tish-shadertoy-run -- src/main.tish"
+  }
+}
