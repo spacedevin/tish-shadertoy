@@ -1,0 +1,7 @@
+# Milkdrop-style hotkeys for tish-shadertoy (edit and restart the viewer).
+# Key names are case-insensitive: F3, f12, Escape, Tab, Space, etc.
+# Single character: "f", "h" (matches that letter key).
+
+[fps]
+# Toggle FPS readout in the window title (smoothed estimate).
+toggle = "F3"

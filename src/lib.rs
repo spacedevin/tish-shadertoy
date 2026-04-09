@@ -2,6 +2,7 @@
 
 mod channels;
 mod compat;
+mod hotkeys;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{Datelike, Timelike};
-use glow::{HasContext, PixelUnpackData};
+use glow::{HasContext, PixelPackData, PixelUnpackData};
 use glutin::config::{Config, ConfigTemplateBuilder, GetGlConfig};
 use glutin::context::{ContextApi, ContextAttributesBuilder, PossiblyCurrentContext, Version};
 use glutin::display::GetGlDisplay;
@@ -28,21 +29,110 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes};
 
+/// Full-screen quad (two triangles). Fragment `mainImage` uses **`gl_FragCoord.xy`** with `iResolution.xy`.
 const VS: &str = r#"#version 330 core
 void main() {
-    vec2 p;
-    if (gl_VertexID == 0) {
-        p = vec2(-1.0, -1.0);
-    } else if (gl_VertexID == 1) {
-        p = vec2(3.0, -1.0);
-    } else {
-        p = vec2(-1.0, 3.0);
-    }
+    vec2 p = vec2[](
+        vec2( 1.0,  1.0),
+        vec2(-1.0,  1.0),
+        vec2(-1.0, -1.0),
+        vec2( 1.0,  1.0),
+        vec2(-1.0, -1.0),
+        vec2( 1.0, -1.0)
+    )[gl_VertexID];
     gl_Position = vec4(p, 0.0, 1.0);
 }
 "#;
 
+/// `iResolution` **xy** plus **z = x/y**, matching [shadertoy-rs `runner.rs`](https://github.com/fmenozzi/shadertoy-rs/blob/master/src/runner.rs) (`[width, height, width / height]`).
+fn i_resolution_uniform(w: f32, h: f32) -> [f32; 3] {
+    let z = if h > 1e-20 { w / h } else { 1.0 };
+    [w, h, z]
+}
+
+/// Map window-space `iMouse` into coordinates for a smaller offscreen buffer (`TISH_SHADER_RENDER_SCALE` path).
+fn mouse_scaled_to_buffer(
+    mouse: (f32, f32, f32, f32),
+    win_w: u32,
+    win_h: u32,
+    buf_w: u32,
+    buf_h: u32,
+) -> (f32, f32, f32, f32) {
+    if win_w == 0 || win_h == 0 {
+        return mouse;
+    }
+    let sx = buf_w as f32 / win_w as f32;
+    let sy = buf_h as f32 / win_h as f32;
+    (
+        mouse.0 * sx,
+        mouse.1 * sy,
+        mouse.2 * sx,
+        mouse.3 * sy,
+    )
+}
+
+/// Built-in `smoothstep` is **undefined** when `edge0 >= edge1`; native GL may NaN. Many stacks
+/// (incl. WebGL) effectively use **`1 - smoothstep(e1, e0, x)`** when `edge0 > edge1`; swapping
+/// edges to `(lo,hi)` and running the Hermite there does **not** match that and can push values
+/// (e.g. heavy subtracts) far **negative** → `tanh` + UNORM clamp → all black.
+const SMOOTHSTEP_DESKTOP_SHIM: &str = r#"
+float tish_smoothstep(float e0, float e1, float x) {
+    if (e0 < e1) {
+        float d = e1 - e0;
+        float t = clamp((x - e0) / d, 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    } else if (e1 < e0) {
+        float d = e0 - e1;
+        float t = clamp((x - e1) / d, 0.0, 1.0);
+        float s = t * t * (3.0 - 2.0 * t);
+        return 1.0 - s;
+    }
+    return step(e0, x);
+}
+vec2 tish_smoothstep(vec2 e0, vec2 e1, vec2 x) {
+    return vec2(
+        tish_smoothstep(e0.x, e1.x, x.x),
+        tish_smoothstep(e0.y, e1.y, x.y));
+}
+vec3 tish_smoothstep(vec3 e0, vec3 e1, vec3 x) {
+    return vec3(
+        tish_smoothstep(e0.x, e1.x, x.x),
+        tish_smoothstep(e0.y, e1.y, x.y),
+        tish_smoothstep(e0.z, e1.z, x.z));
+}
+vec4 tish_smoothstep(vec4 e0, vec4 e1, vec4 x) {
+    return vec4(
+        tish_smoothstep(e0.x, e1.x, x.x),
+        tish_smoothstep(e0.y, e1.y, x.y),
+        tish_smoothstep(e0.z, e1.z, x.z),
+        tish_smoothstep(e0.w, e1.w, x.w));
+}
+#define smoothstep tish_smoothstep
+"#;
+
+/// Optional Brezinski-style `tanh` (**`TISH_SHADER_COMPAT_TANH=1`**). For **huge** inputs, built-in `tanh`
+/// can return NaN on some drivers; the rational form avoids that if `x` is clamped before `x*x`
+/// (see `shaders/scXSRf` / `tanh_approx`). **Default:** use native `tanh` so tone-maps match Shadertoy.
+const TANH_DESKTOP_SHIM: &str = r#"
+float tish_tanh(float x) {
+    x = clamp(x, -80.0, 80.0);
+    float x2 = x * x;
+    return clamp(x * (27.0 + x2) / (27.0 + 9.0 * x2), -1.0, 1.0);
+}
+vec2 tish_tanh(vec2 x) {
+    return vec2(tish_tanh(x.x), tish_tanh(x.y));
+}
+vec3 tish_tanh(vec3 x) {
+    return vec3(tish_tanh(x.x), tish_tanh(x.y), tish_tanh(x.z));
+}
+vec4 tish_tanh(vec4 x) {
+    return vec4(tish_tanh(x.x), tish_tanh(x.y), tish_tanh(x.z), tish_tanh(x.w));
+}
+#define tanh tish_tanh
+"#;
+
 fn preprocess_user_code(src: &str) -> String {
+    let src = src.strip_prefix('\u{feff}').unwrap_or(src);
     let stripped: String = src
         .lines()
         .filter(|line| {
@@ -51,14 +141,70 @@ fn preprocess_user_code(src: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    compat::preprocess_webgl_compat(&stripped)
+    let stripped = compat::strip_float_f_suffix(&stripped);
+    let stripped = compat::rewrite_mat2_cos_define_lines(&stripped);
+    let stripped = compat::rewrite_main_image_out_vec4_to_inout(&stripped);
+    let stripped = compat::preprocess_webgl_compat(&stripped);
+    let stripped = compat::rewrite_for_loop_fragcolor_mul_init(&stripped);
+    if compat::float_postincrement_enabled() {
+        let names = compat::collect_float_declared_names(&stripped);
+        compat::rewrite_float_post_increment(&stripped, &names)
+    } else {
+        stripped
+    }
 }
 
 fn build_fragment_source(user: &str) -> String {
     let user = preprocess_user_code(user);
+    let mat2_shim = if user.contains("tish_mat2_from_vec4") {
+        eprintln!("tish-shadertoy: R-macro mat2(cos(vec4)) expanded for Apple GL (tish_mat2_from_vec4)");
+        "mat2 tish_mat2_from_vec4(vec4 cs) { return mat2(cs.x, cs.y, cs.z, cs.w); }\n"
+    } else {
+        ""
+    };
+    let smooth = if compat::smoothstep_desktop_shim_enabled() {
+        SMOOTHSTEP_DESKTOP_SHIM
+    } else {
+        ""
+    };
+    let tanh_shim = if compat::tanh_desktop_shim_enabled() {
+        TANH_DESKTOP_SHIM
+    } else {
+        ""
+    };
+    let output_tail = if compat::frag_output_tail_enabled() {
+        r#"
+    _tish_acc.rgb = max(_tish_acc.rgb, vec3(0.0));"#
+    } else {
+        ""
+    };
+    let auto_tanh_map = compat::auto_tanh_fragcolor_display_map_enabled()
+        && (user.contains("fragColor = tanh(") || user.contains("fragColor=tanh("));
+    let post_main_tanh_map = if auto_tanh_map {
+        eprintln!("tish-shadertoy: TISH_SHADER_AUTO_TANH_MAP: rgb = rgb*0.5+0.5 (debug only; washes real output)");
+        r#"
+    _tish_acc.rgb = clamp(_tish_acc.rgb * 0.5 + vec3(0.5), 0.0, 1.0);"#
+    } else {
+        ""
+    };
+    let mainimage_coord = if matches!(
+        std::env::var("TISH_SHADER_FRAGCOORD_Y_FLIP").as_deref(),
+        Ok("1" | "true" | "on")
+    ) {
+        eprintln!("tish-shadertoy: mainImage uses flipped Y fragCoord (TISH_SHADER_FRAGCOORD_Y_FLIP=1)");
+        "vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y)"
+    } else if matches!(
+        std::env::var("TISH_SHADER_FRAGCOORD_SUB_HALF").as_deref(),
+        Ok("1" | "true" | "on")
+    ) {
+        eprintln!("tish-shadertoy: mainImage fragCoord uses pixel centers minus 0.5 (TISH_SHADER_FRAGCOORD_SUB_HALF=1)");
+        "(gl_FragCoord.xy - vec2(0.5))"
+    } else {
+        "gl_FragCoord.xy"
+    };
     format!(
         r#"#version 330 core
-layout(location = 0) out vec4 fragColor;
+layout(location = 0) out vec4 _tish_ColorOut;
 uniform vec3  iResolution;
 uniform float iTime;
 uniform float iTimeDelta;
@@ -73,21 +219,146 @@ uniform sampler2D iChannel0;
 uniform sampler2D iChannel1;
 uniform sampler2D iChannel2;
 uniform sampler2D iChannel3;
-// Maps FBO gl_FragCoord to virtual full-res coords: fragCoord.xy * uFragCoordScale
-uniform vec2  uFragCoordScale;
 #define iGlobalTime iTime
 // Shadertoy injects this; required for many copied shaders (e.g. #if HW_PERFORMANCE==0).
 #ifndef HW_PERFORMANCE
 #define HW_PERFORMANCE 1
 #endif
-
+{smooth}
+{tanh_shim}
+{mat2_shim}
 {user}
 
 void main() {{
-    mainImage(fragColor, gl_FragCoord.xy * uFragCoordScale);
+    // Do **not** pass the `layout(location=0) out` variable into `mainImage(out vec4 fragColor, …)`:
+    // aliasing the same `out` with a function `out` parameter miscompiles on some GL drivers (e.g. Apple),
+    // yielding all-black. Accumulate in a local, then assign once.
+    vec4 _tish_acc = vec4(0.0, 0.0, 0.0, 1.0);
+    mainImage(_tish_acc, {mainimage_coord});{output_tail}{post_main_tanh_map}
+    _tish_acc.a = 1.0;
+    _tish_ColorOut = _tish_acc;
 }}
-"#
+"#,
+        smooth = smooth,
+        tanh_shim = tanh_shim,
+        mat2_shim = mat2_shim,
+        user = user,
+        output_tail = output_tail,
+        post_main_tanh_map = post_main_tanh_map,
+        mainimage_coord = mainimage_coord,
     )
+}
+
+#[cfg(test)]
+mod built_fs_tests {
+    static TEST_ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    #[test]
+    fn auto_tanh_display_map_only_when_env_opt_in() {
+        let _g = TEST_ENV_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let snippet = "void mainImage(out vec4 c, in vec2 u) { fragColor=tanh(c+c); }";
+        std::env::remove_var("TISH_SHADER_AUTO_TANH_MAP");
+        let fs = super::build_fragment_source(snippet);
+        assert!(
+            !fs.contains("clamp(_tish_acc.rgb * 0.5 + vec3(0.5)"),
+            "default: no tanh→UNORM hack"
+        );
+        std::env::set_var("TISH_SHADER_AUTO_TANH_MAP", "1");
+        let fs_on = super::build_fragment_source(snippet);
+        assert!(
+            fs_on.contains("clamp(_tish_acc.rgb * 0.5 + vec3(0.5)"),
+            "opt-in: inject remap"
+        );
+        std::env::remove_var("TISH_SHADER_AUTO_TANH_MAP");
+    }
+
+    #[test]
+    fn tanh_rational_shim_only_when_compat_tanh_opt_in() {
+        let _g = TEST_ENV_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let snippet =
+            "void mainImage(out vec4 fragColor, in vec2 u) { fragColor = tanh(fragColor); }";
+        std::env::remove_var("TISH_SHADER_COMPAT_TANH");
+        let fs = super::build_fragment_source(snippet);
+        assert!(
+            !fs.contains("#define tanh tish_tanh"),
+            "default: native GLSL tanh"
+        );
+        std::env::set_var("TISH_SHADER_COMPAT_TANH", "1");
+        let fs_on = super::build_fragment_source(snippet);
+        assert!(fs_on.contains("#define tanh tish_tanh"));
+        assert!(
+            fs_on.contains("x = clamp(x,"),
+            "rational shim must clamp x before x*x (Metal inf/NaN)"
+        );
+        std::env::remove_var("TISH_SHADER_COMPAT_TANH");
+    }
+
+    #[test]
+    fn seven_cf_gzn_rewrites_float_loop_and_for_line_sane() {
+        let code = include_str!("../shaders/7cfGzn");
+        let fs = super::build_fragment_source(code);
+        assert!(
+            fs.contains("i = 0.0;") && fs.contains("for (;") && fs.contains("fragColor *= i"),
+            "expected for-init compat rewrite (split lines); excerpt:\n{}",
+            fs.lines().enumerate().skip(105).take(40).fold(String::new(), |mut a, (i, l)| {
+                use std::fmt::Write;
+                let _ = writeln!(a, "{}: {}", i + 1, l);
+                a
+            })
+        );
+        assert!(
+            fs.contains("i += 1.0"),
+            "expected float loop rewrite; excerpt:\n{}",
+            fs.lines().enumerate().skip(105).take(30).fold(String::new(), |mut a, (i, l)| {
+                use std::fmt::Write;
+                let _ = writeln!(a, "{}: {}", i + 1, l);
+                a
+            })
+        );
+        assert!(
+            !fs.lines().any(|l| l.contains("i++") && !l.trim_start().starts_with("//")),
+            "raw i++ should not appear outside comments"
+        );
+        assert!(
+            !fs.contains("#define tanh tish_tanh"),
+            "default: use native tanh for Shadertoy parity (rational shim is TISH_SHADER_COMPAT_TANH=1)"
+        );
+        assert!(
+            fs.contains("tish_mat2_from_vec4") && fs.contains("#define R(a) tish_mat2_from_vec4"),
+            "7cfGzn R macro must expand mat2(cos(vec4)) for Apple GL (Metal)"
+        );
+        assert!(
+            fs.contains("void mainImage( inout vec4 fragColor"),
+            "out vec4 does not receive caller seed on desktop GLSL; use inout for Metal parity"
+        );
+        assert!(
+            !fs.contains("clamp(_tish_acc.rgb * 0.5 + vec3(0.5)"),
+            "TISH_SHADER_AUTO_TANH_MAP is opt-in; do not remap tanh output by default"
+        );
+    }
+
+    #[test]
+    fn fragment_main_seeds_opaque_black_before_main_image() {
+        let fs = super::build_fragment_source("void mainImage(out vec4 c, in vec2 u) { c = vec4(1.0); }");
+        assert!(
+            fs.contains("vec4 _tish_acc = vec4(0.0, 0.0, 0.0, 1.0);"),
+            "main() should seed accumulator (opaque black a=1) before mainImage"
+        );
+        assert!(
+            fs.contains("mainImage(_tish_acc, gl_FragCoord.xy)"),
+            "main() must not alias global out with mainImage out param (driver bug)"
+        );
+        assert!(
+            fs.contains("_tish_ColorOut = _tish_acc"),
+            "main() should write layout(location=0) once from local accumulator"
+        );
+    }
 }
 
 const BLIT_FS: &str = r#"#version 330 core
@@ -204,7 +475,6 @@ pub struct ViewerApp {
     mouse_buttons: (f32, f32),
     /// `TISH_SHADER_RENDER_SCALE` at startup (GPU cost ∝ scale²).
     render_scale: f32,
-    loc_frag_coord_scale: Option<glow::UniformLocation>,
     fbo: Option<glow::Framebuffer>,
     fbo_texture: Option<glow::Texture>,
     fbo_alloc_w: u32,
@@ -212,6 +482,10 @@ pub struct ViewerApp {
     blit_program: Option<glow::Program>,
     loc_blit_tex: Option<glow::UniformLocation>,
     loc_blit_dest: Option<glow::UniformLocation>,
+    hotkeys: hotkeys::HotkeysConfig,
+    show_fps_in_title: bool,
+    /// One-shot center-pixel readback when `TISH_SHADER_DEBUG=1`.
+    debug_pixel_done: bool,
     exit_result: Result<(), String>,
 }
 
@@ -251,7 +525,6 @@ impl ViewerApp {
             mouse_click_xy: (-1.0, -1.0),
             mouse_buttons: (0.0, 0.0),
             render_scale: render_scale_from_env(),
-            loc_frag_coord_scale: None,
             fbo: None,
             fbo_texture: None,
             fbo_alloc_w: 0,
@@ -259,7 +532,22 @@ impl ViewerApp {
             blit_program: None,
             loc_blit_tex: None,
             loc_blit_dest: None,
+            hotkeys: hotkeys::load(),
+            show_fps_in_title: false,
+            debug_pixel_done: false,
             exit_result: Ok(()),
+        }
+    }
+
+    fn sync_window_title(&self) {
+        let Some(s) = self.state.as_ref() else {
+            return;
+        };
+        if self.show_fps_in_title {
+            let t = format!("Tish Shadertoy — {:.1} FPS", self.fps_ema);
+            s.window.set_title(&t);
+        } else {
+            s.window.set_title("Tish Shadertoy");
         }
     }
 
@@ -308,8 +596,15 @@ impl ViewerApp {
                 return Err(format!("link program: {log}"));
             }
 
-            self.program = Some(program);
             self.loc_resolution = gl.get_uniform_location(program, "iResolution");
+            if self.loc_resolution.is_none() {
+                gl.delete_program(program);
+                gl.delete_shader(vs);
+                return Err(
+                    "linked program has no active iResolution uniform (required for Shadertoy)".into(),
+                );
+            }
+            self.program = Some(program);
             self.loc_time = gl.get_uniform_location(program, "iTime");
             self.loc_time_delta = gl.get_uniform_location(program, "iTimeDelta");
             self.loc_frame = gl.get_uniform_location(program, "iFrame");
@@ -319,8 +614,6 @@ impl ViewerApp {
             self.loc_chan_res = gl.get_uniform_location(program, "iChannelResolution");
             self.loc_i_channel_time = gl.get_uniform_location(program, "iChannelTime");
             self.loc_i_frame_rate = gl.get_uniform_location(program, "iFrameRate");
-            self.loc_frag_coord_scale = gl.get_uniform_location(program, "uFragCoordScale");
-
             let bfs = gl
                 .create_shader(glow::FRAGMENT_SHADER)
                 .map_err(|e| format!("create_shader blit fs: {e}"))?;
@@ -427,6 +720,11 @@ impl ViewerApp {
             self.channel_textures = tex;
             self.channel_file_loaded = file_loaded;
             self.channel_resolution_xy = ch_xy;
+
+            eprintln!(
+                "tish-shadertoy: GL {:?} (shader OK; if black, check terminal with TISH_SHADER_DEBUG=1)",
+                gl.version()
+            );
         }
         Ok(())
     }
@@ -517,16 +815,14 @@ impl ViewerApp {
         Ok(())
     }
 
-    /// `i_resolution` is the logical size passed to `iResolution` (usually the window).
-    /// `viewport` is the framebuffer we draw into. `frag_scale` maps `gl_FragCoord` to
-    /// virtual coords: multiply by `(full_w/vp_w, full_h/vp_h)` when downsampling.
+    /// **`i_resolution.xy` must match the draw viewport** so `gl_FragCoord.xy` and `iResolution` agree.
+    /// **`z` is `x/y`** (shadertoy-rs style).
     fn run_shadertoy_pass(
         &self,
         gl: &glow::Context,
         viewport_w: u32,
         viewport_h: u32,
         i_resolution: (f32, f32),
-        frag_scale: (f32, f32),
         i_time: f32,
         i_time_delta: f32,
         mouse_xyzw: (f32, f32, f32, f32),
@@ -538,14 +834,25 @@ impl ViewerApp {
 
         unsafe {
             gl.viewport(0, 0, viewport_w as i32, viewport_h as i32);
+            gl.disable(glow::CULL_FACE);
+            gl.disable(glow::DEPTH_TEST);
+            gl.disable(glow::STENCIL_TEST);
+            gl.disable(glow::BLEND);
+            gl.disable(glow::SCISSOR_TEST);
+            if matches!(
+                std::env::var("TISH_SHADER_DISABLE_FRAMEBUFFER_SRGB").as_deref(),
+                Ok("1" | "true" | "on")
+            ) {
+                gl.disable(glow::FRAMEBUFFER_SRGB);
+            }
             gl.use_program(Some(program));
 
-            if let Some(loc) = self.loc_resolution.as_ref() {
-                gl.uniform_3_f32(Some(loc), i_resolution.0, i_resolution.1, 1.0);
-            }
-            if let Some(loc) = self.loc_frag_coord_scale.as_ref() {
-                gl.uniform_2_f32(Some(loc), frag_scale.0, frag_scale.1);
-            }
+            let loc = self
+                .loc_resolution
+                .as_ref()
+                .expect("iResolution location checked at init");
+            let r = i_resolution_uniform(i_resolution.0, i_resolution.1);
+            gl.uniform_3_f32(Some(loc), r[0], r[1], r[2]);
             if let Some(loc) = self.loc_time.as_ref() {
                 gl.uniform_1_f32(Some(loc), i_time);
             }
@@ -616,7 +923,7 @@ impl ViewerApp {
             if let Some(vao) = self.vao {
                 gl.bind_vertex_array(Some(vao));
             }
-            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            gl.draw_arrays(glow::TRIANGLES, 0, 6);
         }
         Ok(())
     }
@@ -681,6 +988,7 @@ impl ViewerApp {
         let mouse_xyzw = (mx, my, mz, mw);
         let date_xyzw = (year, month, day, sec_in_day);
         let res_wh = (w as f32, h as f32);
+        let res_buf = (rw as f32, rh as f32);
 
         if use_low_res_pass {
             self.ensure_fbo(gl, rw, rh)?;
@@ -690,17 +998,15 @@ impl ViewerApp {
                 gl.clear_color(0.0, 0.0, 0.0, 1.0);
                 gl.clear(glow::COLOR_BUFFER_BIT);
             }
-            let sx = w as f32 / rw as f32;
-            let sy = h as f32 / rh as f32;
+            let mouse_buf = mouse_scaled_to_buffer(mouse_xyzw, w, h, rw, rh);
             self.run_shadertoy_pass(
                 gl,
                 rw,
                 rh,
-                res_wh,
-                (sx, sy),
+                res_buf,
                 i_time,
                 i_time_delta,
-                mouse_xyzw,
+                mouse_buf,
                 date_xyzw,
             )?;
             unsafe {
@@ -714,6 +1020,17 @@ impl ViewerApp {
                     .ok_or_else(|| "internal: missing FBO texture".to_string())?;
 
                 gl.viewport(0, 0, w as i32, h as i32);
+                gl.disable(glow::CULL_FACE);
+                gl.disable(glow::DEPTH_TEST);
+                gl.disable(glow::STENCIL_TEST);
+                gl.disable(glow::BLEND);
+                gl.disable(glow::SCISSOR_TEST);
+                if matches!(
+                    std::env::var("TISH_SHADER_DISABLE_FRAMEBUFFER_SRGB").as_deref(),
+                    Ok("1" | "true" | "on")
+                ) {
+                    gl.disable(glow::FRAMEBUFFER_SRGB);
+                }
                 gl.clear_color(0.0, 0.0, 0.0, 1.0);
                 gl.clear(glow::COLOR_BUFFER_BIT);
                 gl.use_program(Some(blit));
@@ -728,7 +1045,7 @@ impl ViewerApp {
                 if let Some(vao) = self.vao {
                     gl.bind_vertex_array(Some(vao));
                 }
-                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+                gl.draw_arrays(glow::TRIANGLES, 0, 6);
             }
         } else {
             if self.fbo.is_some() {
@@ -742,12 +1059,48 @@ impl ViewerApp {
                 w,
                 h,
                 res_wh,
-                (1.0, 1.0),
                 i_time,
                 i_time_delta,
                 mouse_xyzw,
                 date_xyzw,
             )?;
+        }
+
+        if !self.debug_pixel_done
+            && matches!(std::env::var("TISH_SHADER_DEBUG").as_deref(), Ok("1"))
+            && w > 0
+            && h > 0
+        {
+            self.debug_pixel_done = true;
+            unsafe {
+                gl.finish();
+                gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
+                let mut px = [0u8; 4];
+                let cx = (w / 2) as i32;
+                let cy = (h / 2) as i32;
+                gl.read_pixels(
+                    cx,
+                    cy,
+                    1,
+                    1,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    PixelPackData::Slice(Some(&mut px)),
+                );
+                let mut c1 = [0u8; 4];
+                let mut c2 = [0u8; 4];
+                gl.read_pixels(8, 8, 1, 1, glow::RGBA, glow::UNSIGNED_BYTE, PixelPackData::Slice(Some(&mut c1)));
+                gl.read_pixels(
+                    (w.saturating_sub(9)) as i32,
+                    (h.saturating_sub(9)) as i32,
+                    1,
+                    1,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    PixelPackData::Slice(Some(&mut c2)),
+                );
+                eprintln!("tish-shadertoy: read_pixels center ({cx},{cy}) RGBA={px:?}  near-bl-lr {c1:?} {c2:?}");
+            }
         }
 
         Ok(())
@@ -867,8 +1220,17 @@ impl ApplicationHandler for ViewerApp {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.logical_key == Key::Named(NamedKey::Escape) {
-                    event_loop.exit();
+                if event.state == ElementState::Pressed {
+                    if event.logical_key == Key::Named(NamedKey::Escape) {
+                        event_loop.exit();
+                        return;
+                    }
+                    if !event.repeat
+                        && hotkeys::key_matches(&event.logical_key, &self.hotkeys.fps_toggle)
+                    {
+                        self.show_fps_in_title = !self.show_fps_in_title;
+                        self.sync_window_title();
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -907,6 +1269,9 @@ impl ApplicationHandler for ViewerApp {
                 if let Err(e) = self.draw_frame(&gl, ww, hh) {
                     self.fail(event_loop, e);
                     return;
+                }
+                if self.show_fps_in_title {
+                    self.sync_window_title();
                 }
                 if let (Some(s), Some(gc)) = (self.state.as_ref(), self.gl_context.as_ref()) {
                     if let Err(e) = s.gl_surface.swap_buffers(gc) {

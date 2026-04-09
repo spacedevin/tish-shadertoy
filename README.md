@@ -28,6 +28,12 @@ cargo run --bin tish-shadertoy-run -- src/main.tish shaders/XstXR2
 
 Close the window or press **Escape** to quit.
 
+## Hotkeys (Milkdrop-style)
+
+Bindings live in **`hotkeys.toml`** in the current working directory (or set **`TISH_SHADER_HOTKEYS_PATH`**). Defaults are committed in this repo.
+
+- **`[fps] toggle`** — show smoothed **FPS in the window title** (default **`F3`**). Press again to hide.
+
 ## Performance
 
 The window uses a **fixed physical pixel size** (default **1280×720**), not a logical size, so HiDPI displays do not silently render at 2× or 3× resolution (which can make heavy raymarchers feel stuck under ~20 FPS).
