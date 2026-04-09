@@ -8,6 +8,30 @@
 
 use std::collections::HashSet;
 
+/// Host-only directives on their own line; stripped before lexer/preprocess (see [`extract_host_pragmas`]).
+#[derive(Clone, Copy, Default, Debug, Eq, PartialEq)]
+pub struct HostPragmas {
+    /// After `mainImage`, inject `clamp(_tish_acc.rgb * 0.5 + 0.5, 0, 1)` so wide linear color maps to
+    /// display like many WebGL stacks. Use when the shader ends with **`o = o / (k * d)`** (or equivalent)
+    /// instead of **`tanh(o / k / d)`** — the latter cannot be recovered in the wrapper.
+    pub post_main_rgb_linear_clamp: bool,
+}
+
+/// Remove `// tish:…` pragma lines and return flags. Call **before** [`strip_float_f_suffix`] / other rewrites.
+pub fn extract_host_pragmas(source: &str) -> (String, HostPragmas) {
+    let mut flags = HostPragmas::default();
+    let mut out = Vec::new();
+    for line in source.lines() {
+        let t = line.trim();
+        if t == "// tish:post-main-rgb-linear-clamp" {
+            flags.post_main_rgb_linear_clamp = true;
+            continue;
+        }
+        out.push(line);
+    }
+    (out.join("\n"), flags)
+}
+
 fn is_ident_continue_byte(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_'
 }
@@ -667,6 +691,16 @@ pub fn rewrite_float_post_increment(source: &str, float_names: &HashSet<String>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_host_pragmas_linear_clamp() {
+        let (s, p) = extract_host_pragmas(
+            "// tish:post-main-rgb-linear-clamp\nvoid mainImage(out vec4 c, in vec2 u) {}\n",
+        );
+        assert!(p.post_main_rgb_linear_clamp);
+        assert!(!s.contains("tish:post-main-rgb-linear-clamp"));
+        assert!(s.contains("void mainImage"));
+    }
 
     #[test]
     fn main_image_out_vec4_becomes_inout() {

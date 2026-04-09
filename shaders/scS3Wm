@@ -12,7 +12,7 @@ float boxen(vec3 p) {
 
 }
 
-vec4 lights = vec4(0.0);
+vec4 lights;
 float map(vec3 p) {
     vec3 q = P(p.z);
     float m, g = q.y-p.y + 6.;
@@ -40,8 +40,7 @@ float map(vec3 p) {
 }
 
 void mainImage(out vec4 o, in vec2 u) {
-    // WebGL implicitly zero-inits; desktop GLSL does not — match Shadertoy.
-    float i = 0.0, s, d = 0.0;
+    float i,s,d;
     vec3  r = iResolution;
     
     u = (u-r.xy/2.)/r.y;
@@ -73,7 +72,7 @@ void mainImage(out vec4 o, in vec2 u) {
     o *= (.1 + max(dot(n, -D), 0.));
     
     // reflection march
-    vec4 ref = vec4(0.0);
+    vec4 ref;
     lights = vec4(0);
     for(p += n*.05, D = reflect(D, n), s=i=0.; i++<4e1; )
         p += D*s,
@@ -81,5 +80,5 @@ void mainImage(out vec4 o, in vec2 u) {
         ref +=  lights + 1./max(s, .01);
 
     o += o*ref;
-    o = tanh(o / 6e6 / d);
+    o = o / (6e6 * d);
 }

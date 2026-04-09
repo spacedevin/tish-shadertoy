@@ -14,12 +14,12 @@ path = "src/bin/tish-shadertoy-run.rs"
 tishlang_core = { path = "../tish/crates/tish_core" }
 tishlang_eval = { path = "../tish/crates/tish_eval", features = ["process", "fs"] }
 tishlang_parser = { path = "../tish/crates/tish_parser" }
-winit = "0.30"
-glutin = "0.32"
-glutin-winit = "0.5"
-raw-window-handle = "0.6"
-glow = "0.16"
-chrono = "0.4"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+winit = "0.30.13"
+glutin = "0.32.3"
+glutin-winit = "0.5.0"
+raw-window-handle = "0.6.2"
+glow = "0.17.0"
+chrono = "0.4.44"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.1"

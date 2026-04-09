@@ -155,7 +155,8 @@ fn preprocess_user_code(src: &str) -> String {
 }
 
 fn build_fragment_source(user: &str) -> String {
-    let user = preprocess_user_code(user);
+    let (user, host_pragmas) = compat::extract_host_pragmas(user);
+    let user = preprocess_user_code(&user);
     let mat2_shim = if user.contains("tish_mat2_from_vec4") {
         eprintln!("tish-shadertoy: R-macro mat2(cos(vec4)) expanded for Apple GL (tish_mat2_from_vec4)");
         "mat2 tish_mat2_from_vec4(vec4 cs) { return mat2(cs.x, cs.y, cs.z, cs.w); }\n"
@@ -174,8 +175,20 @@ fn build_fragment_source(user: &str) -> String {
     };
     let auto_tanh_map = compat::auto_tanh_fragcolor_display_map_enabled()
         && (user.contains("fragColor = tanh(") || user.contains("fragColor=tanh("));
-    let post_main_tanh_map = if auto_tanh_map {
+    // Same GLSL line as `post_main_rgb_linear_clamp`; pragma path expects pre-tanh acc — do not double up.
+    let post_main_tanh_map = if auto_tanh_map && !host_pragmas.post_main_rgb_linear_clamp {
         eprintln!("tish-shadertoy: TISH_SHADER_AUTO_TANH_MAP: rgb = rgb*0.5+0.5 (debug only; washes real output)");
+        r#"
+    _tish_acc.rgb = clamp(_tish_acc.rgb * 0.5 + vec3(0.5), 0.0, 1.0);"#
+    } else {
+        ""
+    };
+    let post_main_rgb_linear_clamp = if host_pragmas.post_main_rgb_linear_clamp
+        && !matches!(
+            std::env::var("TISH_SHADER_DISABLE_POST_MAIN_RGB_LINEAR_CLAMP").as_deref(),
+            Ok("1" | "true" | "on")
+        ) {
+        eprintln!("tish-shadertoy: host post-main rgb linear clamp (// tish:post-main-rgb-linear-clamp)");
         r#"
     _tish_acc.rgb = clamp(_tish_acc.rgb * 0.5 + vec3(0.5), 0.0, 1.0);"#
     } else {
@@ -208,12 +221,15 @@ fn build_fragment_source(user: &str) -> String {
     };
     if matches!(std::env::var("TISH_SHADER_DEBUG").as_deref(), Ok("1")) {
         eprintln!(
-            "tish-shadertoy: FS inject: smoothstep_preamble={} tanh_shim={} tanh_remap={} force_a={} \
-             (smoothstep only applies if the shader calls smoothstep())",
+            "tish-shadertoy: FS inject: smoothstep_preamble={} tanh_shim={} tanh_remap={} host_linear_clamp={} force_a={} \
+             framebuffer_srgb_write={} (smoothstep only applies if the shader calls smoothstep(); \
+             set TISH_SHADER_FRAMEBUFFER_SRGB=1 to enable sRGB encode on write)",
             !smooth.is_empty(),
             !tanh_shim.is_empty(),
             !post_main_tanh_map.is_empty(),
+            !post_main_rgb_linear_clamp.is_empty(),
             force_opaque_alpha,
+            framebuffer_srgb_write_enabled(),
         );
     }
     format!(
@@ -248,7 +264,7 @@ void main() {{
     // aliasing the same `out` with a function `out` parameter miscompiles on some GL drivers (e.g. Apple),
     // yielding all-black. Accumulate in a local, then assign once.
     vec4 _tish_acc = vec4(0.0, 0.0, 0.0, 1.0);
-    mainImage(_tish_acc, {mainimage_coord});{post_main_tanh_map}{alpha_fix}
+    mainImage(_tish_acc, {mainimage_coord});{post_main_tanh_map}{post_main_rgb_linear_clamp}{alpha_fix}
     _tish_ColorOut = _tish_acc;
 }}
 "#,
@@ -257,6 +273,7 @@ void main() {{
         mat2_shim = mat2_shim,
         user = user,
         post_main_tanh_map = post_main_tanh_map,
+        post_main_rgb_linear_clamp = post_main_rgb_linear_clamp,
         alpha_fix = alpha_fix,
         mainimage_coord = mainimage_coord,
     )
@@ -310,6 +327,23 @@ mod built_fs_tests {
             "rational shim must clamp x before x*x (Metal inf/NaN)"
         );
         std::env::remove_var("TISH_SHADER_COMPAT_TANH");
+    }
+
+    #[test]
+    fn post_main_rgb_linear_clamp_from_pragma() {
+        let _g = TEST_ENV_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        std::env::remove_var("TISH_SHADER_DISABLE_POST_MAIN_RGB_LINEAR_CLAMP");
+        let fs = super::build_fragment_source(
+            "// tish:post-main-rgb-linear-clamp\nvoid mainImage(out vec4 c, in vec2 u) { c = vec4(1.0); }",
+        );
+        assert!(
+            fs.contains("clamp(_tish_acc.rgb * 0.5 + vec3(0.5)"),
+            "expected host linear clamp after mainImage; got excerpt:\n{}",
+            fs.lines().find(|l| l.contains("_tish_acc.rgb")).unwrap_or("")
+        );
     }
 
     #[test]
@@ -401,6 +435,19 @@ void main() {
     fragColor = texture(uBlitTex, uv);
 }
 "#;
+
+/// When **true**, `glEnable(FRAMEBUFFER_SRGB)` is used for draws to the default framebuffer (and blit),
+/// so **linear** fragment color is encoded to **sRGB** on write.
+///
+/// **Default off.** Most Shadertoy copies assume direct UNORM storage; forcing sRGB encode here often looks
+/// like a **white / washed overlay**. Opt **in** with **`TISH_SHADER_FRAMEBUFFER_SRGB=1`** (or `true` / `on`)
+/// when a shader outputs linear RGB and you want browser-like encoding.
+fn framebuffer_srgb_write_enabled() -> bool {
+    matches!(
+        std::env::var("TISH_SHADER_FRAMEBUFFER_SRGB").as_deref(),
+        Ok("1" | "true" | "on")
+    )
+}
 
 fn render_scale_from_env() -> f32 {
     std::env::var("TISH_SHADER_RENDER_SCALE")
@@ -870,14 +917,9 @@ impl ViewerApp {
             gl.disable(glow::STENCIL_TEST);
             gl.disable(glow::BLEND);
             gl.disable(glow::SCISSOR_TEST);
-            // Many drivers enable sRGB conversion for the default framebuffer; Shadertoy-style shaders
-            // usually output linear-ish color and expect UNORM storage without an extra encode pass.
-            // Leaving FRAMEBUFFER_SRGB on skews gamma and makes scenes look harsh/banded vs browser.
-            // Opt in with TISH_SHADER_FRAMEBUFFER_SRGB=1 if you want driver sRGB encoding on write.
-            if !matches!(
-                std::env::var("TISH_SHADER_FRAMEBUFFER_SRGB").as_deref(),
-                Ok("1" | "true" | "on")
-            ) {
+            if framebuffer_srgb_write_enabled() {
+                gl.enable(glow::FRAMEBUFFER_SRGB);
+            } else {
                 gl.disable(glow::FRAMEBUFFER_SRGB);
             }
             gl.use_program(Some(program));
@@ -1060,10 +1102,9 @@ impl ViewerApp {
                 gl.disable(glow::STENCIL_TEST);
                 gl.disable(glow::BLEND);
                 gl.disable(glow::SCISSOR_TEST);
-                if !matches!(
-                    std::env::var("TISH_SHADER_FRAMEBUFFER_SRGB").as_deref(),
-                    Ok("1" | "true" | "on")
-                ) {
+                if framebuffer_srgb_write_enabled() {
+                    gl.enable(glow::FRAMEBUFFER_SRGB);
+                } else {
                     gl.disable(glow::FRAMEBUFFER_SRGB);
                 }
                 gl.clear_color(0.0, 0.0, 0.0, 1.0);
