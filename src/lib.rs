@@ -66,6 +66,8 @@ uniform sampler2D iChannel0;
 uniform sampler2D iChannel1;
 uniform sampler2D iChannel2;
 uniform sampler2D iChannel3;
+// Maps FBO gl_FragCoord to virtual full-res coords: fragCoord.xy * uFragCoordScale
+uniform vec2  uFragCoordScale;
 #define iGlobalTime iTime
 // Shadertoy injects this; required for many copied shaders (e.g. #if HW_PERFORMANCE==0).
 #ifndef HW_PERFORMANCE
@@ -75,10 +77,28 @@ uniform sampler2D iChannel3;
 {user}
 
 void main() {{
-    mainImage(fragColor, gl_FragCoord.xy);
+    mainImage(fragColor, gl_FragCoord.xy * uFragCoordScale);
 }}
 "#
     )
+}
+
+const BLIT_FS: &str = r#"#version 330 core
+layout(location = 0) out vec4 fragColor;
+uniform sampler2D uBlitTex;
+uniform vec2 uBlitDestPx;
+void main() {
+    vec2 uv = gl_FragCoord.xy / uBlitDestPx;
+    fragColor = texture(uBlitTex, uv);
+}
+"#;
+
+fn render_scale_from_env() -> f32 {
+    std::env::var("TISH_SHADER_RENDER_SCALE")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .map(|s| s.clamp(0.05, 1.0))
+        .unwrap_or(1.0)
 }
 
 fn gl_config_picker(configs: Box<dyn Iterator<Item = Config> + '_>) -> Config {
@@ -169,6 +189,16 @@ pub struct ViewerApp {
     mouse_xy: (f32, f32),
     mouse_click_xy: (f32, f32),
     mouse_buttons: (f32, f32),
+    /// `TISH_SHADER_RENDER_SCALE` at startup (GPU cost ∝ scale²).
+    render_scale: f32,
+    loc_frag_coord_scale: Option<glow::UniformLocation>,
+    fbo: Option<glow::Framebuffer>,
+    fbo_texture: Option<glow::Texture>,
+    fbo_alloc_w: u32,
+    fbo_alloc_h: u32,
+    blit_program: Option<glow::Program>,
+    loc_blit_tex: Option<glow::UniformLocation>,
+    loc_blit_dest: Option<glow::UniformLocation>,
     exit_result: Result<(), String>,
 }
 
@@ -202,6 +232,15 @@ impl ViewerApp {
             mouse_xy: (-1.0, -1.0),
             mouse_click_xy: (-1.0, -1.0),
             mouse_buttons: (0.0, 0.0),
+            render_scale: render_scale_from_env(),
+            loc_frag_coord_scale: None,
+            fbo: None,
+            fbo_texture: None,
+            fbo_alloc_w: 0,
+            fbo_alloc_h: 0,
+            blit_program: None,
+            loc_blit_tex: None,
+            loc_blit_dest: None,
             exit_result: Ok(()),
         }
     }
@@ -243,11 +282,11 @@ impl ViewerApp {
             gl.attach_shader(program, vs);
             gl.attach_shader(program, fs);
             gl.link_program(program);
-            gl.delete_shader(vs);
             gl.delete_shader(fs);
             if !gl.get_program_link_status(program) {
                 let log = gl.get_program_info_log(program);
                 gl.delete_program(program);
+                gl.delete_shader(vs);
                 return Err(format!("link program: {log}"));
             }
 
@@ -260,6 +299,35 @@ impl ViewerApp {
             self.loc_date = gl.get_uniform_location(program, "iDate");
             self.loc_sample_rate = gl.get_uniform_location(program, "iSampleRate");
             self.loc_chan_res = gl.get_uniform_location(program, "iChannelResolution");
+            self.loc_frag_coord_scale = gl.get_uniform_location(program, "uFragCoordScale");
+
+            let bfs = gl
+                .create_shader(glow::FRAGMENT_SHADER)
+                .map_err(|e| format!("create_shader blit fs: {e}"))?;
+            gl.shader_source(bfs, BLIT_FS);
+            gl.compile_shader(bfs);
+            if !gl.get_shader_compile_status(bfs) {
+                let log = gl.get_shader_info_log(bfs);
+                gl.delete_shader(bfs);
+                return Err(format!("blit fragment shader: {log}"));
+            }
+            let blit_prog = gl
+                .create_program()
+                .map_err(|e| format!("create_program blit: {e}"))?;
+            gl.attach_shader(blit_prog, vs);
+            gl.attach_shader(blit_prog, bfs);
+            gl.link_program(blit_prog);
+            gl.delete_shader(bfs);
+            if !gl.get_program_link_status(blit_prog) {
+                let log = gl.get_program_info_log(blit_prog);
+                gl.delete_program(blit_prog);
+                gl.delete_shader(vs);
+                return Err(format!("link blit program: {log}"));
+            }
+            gl.delete_shader(vs);
+            self.blit_program = Some(blit_prog);
+            self.loc_blit_tex = gl.get_uniform_location(blit_prog, "uBlitTex");
+            self.loc_blit_dest = gl.get_uniform_location(blit_prog, "uBlitDestPx");
 
             let vao = gl
                 .create_vertex_array()
@@ -312,77 +380,152 @@ impl ViewerApp {
         Ok(())
     }
 
-    fn draw_frame(&mut self, gl: &Rc<glow::Context>, w: u32, h: u32) {
-        let now = Instant::now();
-        let start = *self.start.get_or_insert(now);
-        let i_time = now.duration_since(start).as_secs_f32();
-        let i_time_delta = self
-            .last_frame
-            .map(|p| now.duration_since(p).as_secs_f32())
-            .unwrap_or(0.0);
-        self.last_frame = Some(now);
-        self.frame_idx = self.frame_idx.saturating_add(1);
+    fn release_fbo(&mut self, gl: &glow::Context) {
+        unsafe {
+            if let Some(f) = self.fbo.take() {
+                gl.delete_framebuffer(f);
+            }
+            if let Some(t) = self.fbo_texture.take() {
+                gl.delete_texture(t);
+            }
+            self.fbo_alloc_w = 0;
+            self.fbo_alloc_h = 0;
+        }
+    }
 
-        let (mx, my) = self.mouse_xy;
-        let (cx, cy) = self.mouse_click_xy;
+    fn ensure_fbo(&mut self, gl: &glow::Context, rw: u32, rh: u32) -> Result<(), String> {
+        if self.fbo.is_some() && self.fbo_alloc_w == rw && self.fbo_alloc_h == rh {
+            return Ok(());
+        }
+        unsafe {
+            self.release_fbo(gl);
+            let tex = gl
+                .create_texture()
+                .map_err(|e| format!("fbo texture: {e}"))?;
+            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA8 as i32,
+                rw as i32,
+                rh as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                PixelUnpackData::Slice(None),
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::LINEAR as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_S,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_T,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            gl.bind_texture(glow::TEXTURE_2D, None);
 
-        let local = chrono::Local::now();
-        let year = local.year() as f32;
-        let month = local.month() as f32;
-        let day = local.day() as f32;
-        let sec_in_day = (local.hour() as f32) * 3600.0
-            + (local.minute() as f32) * 60.0
-            + local.second() as f32;
+            let fbo = gl
+                .create_framebuffer()
+                .map_err(|e| format!("create_framebuffer: {e}"))?;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(tex),
+                0,
+            );
+            gl.draw_buffers(&[glow::COLOR_ATTACHMENT0]);
+            let st = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            if st != glow::FRAMEBUFFER_COMPLETE {
+                gl.delete_framebuffer(fbo);
+                gl.delete_texture(tex);
+                return Err(format!(
+                    "framebuffer incomplete (status {:#x}, size {rw}x{rh})",
+                    st
+                ));
+            }
+            self.fbo = Some(fbo);
+            self.fbo_texture = Some(tex);
+            self.fbo_alloc_w = rw;
+            self.fbo_alloc_h = rh;
+        }
+        Ok(())
+    }
 
-        let Some(program) = self.program else {
-            return;
-        };
-        let loc_resolution = self.loc_resolution.as_ref();
-        let loc_time = self.loc_time.as_ref();
-        let loc_time_delta = self.loc_time_delta.as_ref();
-        let loc_frame = self.loc_frame.as_ref();
-        let loc_mouse = self.loc_mouse.as_ref();
-        let loc_date = self.loc_date.as_ref();
-        let loc_sample_rate = self.loc_sample_rate.as_ref();
-        let loc_chan_res = self.loc_chan_res.as_ref();
-
-        let mz = if self.mouse_buttons.0 > 0.5 {
-            cx
-        } else {
-            -cx.abs() - 1.0
-        };
-        let mw = if self.mouse_buttons.0 > 0.5 {
-            cy
-        } else {
-            -cy.abs() - 1.0
-        };
+    /// `i_resolution` is the logical size passed to `iResolution` (usually the window).
+    /// `viewport` is the framebuffer we draw into. `frag_scale` maps `gl_FragCoord` to
+    /// virtual coords: multiply by `(full_w/vp_w, full_h/vp_h)` when downsampling.
+    fn run_shadertoy_pass(
+        &self,
+        gl: &glow::Context,
+        viewport_w: u32,
+        viewport_h: u32,
+        i_resolution: (f32, f32),
+        frag_scale: (f32, f32),
+        i_time: f32,
+        i_time_delta: f32,
+        mouse_xyzw: (f32, f32, f32, f32),
+        date_xyzw: (f32, f32, f32, f32),
+    ) -> Result<(), String> {
+        let program = self
+            .program
+            .ok_or_else(|| "internal: missing shader program".to_string())?;
 
         unsafe {
-            gl.viewport(0, 0, w as i32, h as i32);
+            gl.viewport(0, 0, viewport_w as i32, viewport_h as i32);
             gl.use_program(Some(program));
 
-            if let Some(loc) = loc_resolution {
-                gl.uniform_3_f32(Some(loc), w as f32, h as f32, 1.0);
+            if let Some(loc) = self.loc_resolution.as_ref() {
+                gl.uniform_3_f32(Some(loc), i_resolution.0, i_resolution.1, 1.0);
             }
-            if let Some(loc) = loc_time {
+            if let Some(loc) = self.loc_frag_coord_scale.as_ref() {
+                gl.uniform_2_f32(Some(loc), frag_scale.0, frag_scale.1);
+            }
+            if let Some(loc) = self.loc_time.as_ref() {
                 gl.uniform_1_f32(Some(loc), i_time);
             }
-            if let Some(loc) = loc_time_delta {
+            if let Some(loc) = self.loc_time_delta.as_ref() {
                 gl.uniform_1_f32(Some(loc), i_time_delta);
             }
-            if let Some(loc) = loc_frame {
+            if let Some(loc) = self.loc_frame.as_ref() {
                 gl.uniform_1_i32(Some(loc), self.frame_idx);
             }
-            if let Some(loc) = loc_mouse {
-                gl.uniform_4_f32(Some(loc), mx, my, mz, mw);
+            if let Some(loc) = self.loc_mouse.as_ref() {
+                gl.uniform_4_f32(
+                    Some(loc),
+                    mouse_xyzw.0,
+                    mouse_xyzw.1,
+                    mouse_xyzw.2,
+                    mouse_xyzw.3,
+                );
             }
-            if let Some(loc) = loc_date {
-                gl.uniform_4_f32(Some(loc), year, month, day, sec_in_day);
+            if let Some(loc) = self.loc_date.as_ref() {
+                gl.uniform_4_f32(
+                    Some(loc),
+                    date_xyzw.0,
+                    date_xyzw.1,
+                    date_xyzw.2,
+                    date_xyzw.3,
+                );
             }
-            if let Some(loc) = loc_sample_rate {
+            if let Some(loc) = self.loc_sample_rate.as_ref() {
                 gl.uniform_1_f32(Some(loc), 44100.0);
             }
-            if let Some(loc) = loc_chan_res {
+            if let Some(loc) = self.loc_chan_res.as_ref() {
                 let v = [1.0f32; 12];
                 gl.uniform_3_f32_slice(Some(loc), &v);
             }
@@ -406,6 +549,123 @@ impl ViewerApp {
             }
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
         }
+        Ok(())
+    }
+
+    fn draw_frame(&mut self, gl: &Rc<glow::Context>, w: u32, h: u32) -> Result<(), String> {
+        let now = Instant::now();
+        let start = *self.start.get_or_insert(now);
+        let i_time = now.duration_since(start).as_secs_f32();
+        let i_time_delta = self
+            .last_frame
+            .map(|p| now.duration_since(p).as_secs_f32())
+            .unwrap_or(0.0);
+        self.last_frame = Some(now);
+        self.frame_idx = self.frame_idx.saturating_add(1);
+
+        let (mx, my) = self.mouse_xy;
+        let (cx, cy) = self.mouse_click_xy;
+
+        let local = chrono::Local::now();
+        let year = local.year() as f32;
+        let month = local.month() as f32;
+        let day = local.day() as f32;
+        let sec_in_day = (local.hour() as f32) * 3600.0
+            + (local.minute() as f32) * 60.0
+            + local.second() as f32;
+
+        if self.program.is_none() {
+            return Ok(());
+        }
+        let mz = if self.mouse_buttons.0 > 0.5 {
+            cx
+        } else {
+            -cx.abs() - 1.0
+        };
+        let mw = if self.mouse_buttons.0 > 0.5 {
+            cy
+        } else {
+            -cy.abs() - 1.0
+        };
+
+        let scale = self.render_scale;
+        let rw = ((w as f32 * scale).round() as u32).max(1);
+        let rh = ((h as f32 * scale).round() as u32).max(1);
+        let use_low_res_pass = scale < 0.999 && (rw < w || rh < h);
+
+        let mouse_xyzw = (mx, my, mz, mw);
+        let date_xyzw = (year, month, day, sec_in_day);
+        let res_wh = (w as f32, h as f32);
+
+        if use_low_res_pass {
+            self.ensure_fbo(gl, rw, rh)?;
+            unsafe {
+                let fbo = self.fbo.ok_or_else(|| "internal: missing FBO".to_string())?;
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+                gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+            }
+            let sx = w as f32 / rw as f32;
+            let sy = h as f32 / rh as f32;
+            self.run_shadertoy_pass(
+                gl,
+                rw,
+                rh,
+                res_wh,
+                (sx, sy),
+                i_time,
+                i_time_delta,
+                mouse_xyzw,
+                date_xyzw,
+            )?;
+            unsafe {
+                gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+
+                let blit = self
+                    .blit_program
+                    .ok_or_else(|| "internal: missing blit program".to_string())?;
+                let fbo_tex = self
+                    .fbo_texture
+                    .ok_or_else(|| "internal: missing FBO texture".to_string())?;
+
+                gl.viewport(0, 0, w as i32, h as i32);
+                gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+                gl.use_program(Some(blit));
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(fbo_tex));
+                if let Some(loc) = self.loc_blit_tex.as_ref() {
+                    gl.uniform_1_i32(Some(loc), 0);
+                }
+                if let Some(loc) = self.loc_blit_dest.as_ref() {
+                    gl.uniform_2_f32(Some(loc), w as f32, h as f32);
+                }
+                if let Some(vao) = self.vao {
+                    gl.bind_vertex_array(Some(vao));
+                }
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            }
+        } else {
+            if self.fbo.is_some() {
+                self.release_fbo(gl);
+            }
+            unsafe {
+                gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            }
+            self.run_shadertoy_pass(
+                gl,
+                w,
+                h,
+                res_wh,
+                (1.0, 1.0),
+                i_time,
+                i_time_delta,
+                mouse_xyzw,
+                date_xyzw,
+            )?;
+        }
+
+        Ok(())
     }
 }
 
@@ -559,11 +819,10 @@ impl ApplicationHandler for ViewerApp {
                 let Some(gl) = self.gl.clone() else {
                     return;
                 };
-                unsafe {
-                    gl.clear_color(0.0, 0.0, 0.0, 1.0);
-                    gl.clear(glow::COLOR_BUFFER_BIT);
+                if let Err(e) = self.draw_frame(&gl, ww, hh) {
+                    self.fail(event_loop, e);
+                    return;
                 }
-                self.draw_frame(&gl, ww, hh);
                 if let (Some(s), Some(gc)) = (self.state.as_ref(), self.gl_context.as_ref()) {
                     if let Err(e) = s.gl_surface.swap_buffers(gc) {
                         eprintln!("swap_buffers: {e:?}");
@@ -600,6 +859,15 @@ impl Drop for ViewerApp {
         if let Some(gl) = self.gl.take() {
             if let Ok(gl) = Rc::try_unwrap(gl) {
                 unsafe {
+                    if let Some(f) = self.fbo.take() {
+                        gl.delete_framebuffer(f);
+                    }
+                    if let Some(t) = self.fbo_texture.take() {
+                        gl.delete_texture(t);
+                    }
+                    if let Some(p) = self.blit_program.take() {
+                        gl.delete_program(p);
+                    }
                     if let Some(v) = self.vao.take() {
                         gl.delete_vertex_array(v);
                     }
