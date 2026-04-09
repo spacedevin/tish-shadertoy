@@ -67,6 +67,10 @@ uniform sampler2D iChannel1;
 uniform sampler2D iChannel2;
 uniform sampler2D iChannel3;
 #define iGlobalTime iTime
+// Shadertoy injects this; required for many copied shaders (e.g. #if HW_PERFORMANCE==0).
+#ifndef HW_PERFORMANCE
+#define HW_PERFORMANCE 1
+#endif
 
 {user}
 

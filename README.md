@@ -36,6 +36,7 @@ The CLI script uses **`readFile`** from **`tish:fs`** to load the path you pass 
 
 ## MVP limits
 
+- **Shadertoy preprocessor:** the viewer defines **`HW_PERFORMANCE`** to **`1`** when your shader does not (the website sets this; without it, `#if HW_PERFORMANCE==0` can fail to compile on desktop GL).
 - **Single full-screen fragment pass** — no buffer/sound multipass pipeline.
 - **iChannel0–3** are bound to **1×1 black** textures so simple shaders compile; real texture URLs / cubemaps are not loaded yet.
 - Uniforms include `iResolution`, `iTime`, `iTimeDelta`, `iFrame`, `iMouse`, `iDate`, `iSampleRate`, `iChannelResolution`, and `iGlobalTime` (alias of `iTime`). See the [VS Code Shader Toy extension](https://github.com/stevensona/shader-toy) for `mainImage` conventions.
