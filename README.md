@@ -28,6 +28,17 @@ cargo run --bin tish-shadertoy-run -- src/main.tish shaders/XstXR2
 
 Close the window or press **Escape** to quit.
 
+## Performance
+
+The window uses a **fixed physical pixel size** (default **1280×720**), not a logical size, so HiDPI displays do not silently render at 2× or 3× resolution (which can make heavy raymarchers feel stuck under ~20 FPS).
+
+- **`TISH_SHADER_WIDTH`** / **`TISH_SHADER_HEIGHT`** — override backing resolution (physical pixels).
+- **`TISH_SHADER_VSYNC=0`** — disable vsync (`DontWait`); useful to see uncapped FPS while tuning (may tear).
+
+The GL config picker prefers **no multisampling** (MSAA). The old behavior preferred the *highest* sample count, which could multiply fragment cost for little gain on a single full-screen triangle.
+
+Some shaders (e.g. IQ’s distance-function demos with **`AA 2`**) intentionally shade **2×2 supersampled** pixels — that is ~4× more work inside `mainImage`; lower `AA` in the file if you need speed.
+
 ## Tish API (`tish:shadertoy`)
 
 - **`run(code)`** — opens the native viewer (blocks until the window closes).

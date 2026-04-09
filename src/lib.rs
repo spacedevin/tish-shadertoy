@@ -19,7 +19,7 @@ use glutin_winit::{DisplayBuilder, GlWindow};
 use raw_window_handle::HasWindowHandle;
 use tishlang_eval::{PropMap, TishNativeModule, Value as EvalValue};
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
@@ -82,16 +82,10 @@ void main() {{
 }
 
 fn gl_config_picker(configs: Box<dyn Iterator<Item = Config> + '_>) -> Config {
+    // Prefer **no MSAA**: we run a full-screen fragment shader; high sample counts can
+    // multiply cost dramatically with little visual benefit for a single triangle.
     configs
-        .reduce(|accum, config| {
-            let transparency_check = config.supports_transparency().unwrap_or(false)
-                & !accum.supports_transparency().unwrap_or(false);
-            if transparency_check || config.num_samples() > accum.num_samples() {
-                config
-            } else {
-                accum
-            }
-        })
+        .min_by_key(|c| c.num_samples())
         .expect("no GL config")
 }
 
@@ -116,11 +110,28 @@ fn create_gl_context(window: &Window, gl_config: &Config) -> glutin::context::No
     }
 }
 
+/// Backing size in **physical pixels** (actual fragment workload). `LogicalSize` would map
+/// to very large framebuffers on HiDPI (e.g. Retina), which tanks heavy shaders.
+fn window_physical_size() -> PhysicalSize<u32> {
+    let w = std::env::var("TISH_SHADER_WIDTH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1280)
+        .max(1);
+    let h = std::env::var("TISH_SHADER_HEIGHT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(720)
+        .max(1);
+    PhysicalSize::new(w, h)
+}
+
 fn window_attributes() -> WindowAttributes {
+    let size = window_physical_size();
     Window::default_attributes()
         .with_title("Tish Shadertoy")
-        .with_inner_size(LogicalSize::new(1280.0, 720.0))
-        .with_min_inner_size(LogicalSize::new(1.0, 1.0))
+        .with_inner_size(size)
+        .with_min_inner_size(PhysicalSize::new(1, 1))
 }
 
 enum GlInit {
@@ -486,10 +497,16 @@ impl ApplicationHandler for ViewerApp {
         }
         self.gl = Some(Rc::new(gl));
 
-        if let Err(e) = gl_surface.set_swap_interval(
-            self.gl_context.as_ref().unwrap(),
-            SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
-        ) {
+        let vsync = !matches!(
+            std::env::var("TISH_SHADER_VSYNC").as_deref(),
+            Ok("0" | "false" | "off")
+        );
+        let interval = if vsync {
+            SwapInterval::Wait(NonZeroU32::new(1).unwrap())
+        } else {
+            SwapInterval::DontWait
+        };
+        if let Err(e) = gl_surface.set_swap_interval(self.gl_context.as_ref().unwrap(), interval) {
             eprintln!("swap interval: {e:?}");
         }
 
