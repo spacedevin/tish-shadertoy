@@ -21,7 +21,7 @@ Paths assume this repo sits next to the main [`tish`](https://github.com/tishlan
 ## Run
 
 ```bash
-cargo run --bin tish-shadertoy-run -- src/main.tish shaders/XstXR2
+cargo run --bin tish-shadertoy-run -- src/main.tish shaders/XstXR2.glsl
 ```
 
 `argv[2]` is any path to a UTF-8 file containing the shader body (Shadertoy image-pass style).
@@ -37,6 +37,8 @@ Bindings live in **`hotkeys.toml`** in the current working directory (or set **`
 ## Performance
 
 The window uses a **fixed physical pixel size** (default **1280×720**), not a logical size, so HiDPI displays do not silently render at 2× or 3× resolution (which can make heavy raymarchers feel stuck under ~20 FPS).
+
+TISH_SHADER_DEBUG=1 TISH_SHADER_COMPAT_TANH=1 TISH_SHADER_RENDER_SCALE=.5 TISH_SHADER_WIDTH=1024 TISH_SHADER_HEIGHT=1024 cargo run --bin tish-shadertoy-run -- src/main.tish shaders/7cjGRR.glsl
 
 - **`TISH_SHADER_WIDTH`** / **`TISH_SHADER_HEIGHT`** — override backing resolution (physical pixels).
 - **`TISH_SHADER_RENDER_SCALE`** — internal render scale in **(0, 1]** (default **1**). The heavy `mainImage` pass runs at `floor(window × scale)` pixels, then the result is **linearly upscaled** to the window. Example: `0.5` → about **4× fewer** fragment invocations; `iResolution` and `fragCoord` still match the full window so most Shadertoy math stays consistent. Clamped to **0.05..1.0**.

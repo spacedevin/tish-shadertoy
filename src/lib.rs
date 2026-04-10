@@ -4,6 +4,9 @@ mod channels;
 mod compat;
 mod hotkeys;
 
+/// Local workspace crate: window + GL shell ([`tish:winint`](https://github.com/tishlang/tish-shadertoy/tree/main/crates/tish_winint)).
+pub use tish_winint;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -115,7 +118,7 @@ vec4 tish_smoothstep(vec4 e0, vec4 e1, vec4 x) {
 /// **Default (no env):** the **driver’s** built-in `tanh` — not a separate host implementation.
 /// “Oversaturation” vs using only `o/(k*d)` is usually the **tanh curve** (large inputs → ~±1), not a Metal bug.
 /// For **huge** inputs, built-in `tanh` can return NaN on some drivers; the rational form avoids that
-/// (see `shaders/scXSRf`). **`vec4`** passes **`.w` through** so tone-mapped finals don’t also warp alpha
+/// (see `shaders/scXSRf.glsl`). **`vec4`** passes **`.w` through** so tone-mapped finals don’t also warp alpha
 /// before the wrapper sets `a = 1`.
 const TANH_DESKTOP_SHIM: &str = r#"
 float tish_tanh(float x) {
@@ -366,7 +369,7 @@ mod built_fs_tests {
 
     #[test]
     fn seven_cf_gzn_rewrites_float_loop_and_for_line_sane() {
-        let code = include_str!("../shaders/7cfGzn");
+        let code = include_str!("../shaders/7cfGzn.glsl");
         let fs = super::build_fragment_source(code);
         assert!(
             fs.contains("i = 0.0;") && fs.contains("for (;") && fs.contains("fragColor *= i"),

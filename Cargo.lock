@@ -1678,9 +1678,23 @@ dependencies = [
  "image",
  "raw-window-handle",
  "serde",
+ "tish-winint",
  "tishlang_core",
  "tishlang_eval",
  "tishlang_parser",
+ "toml",
+ "winit",
+]
+
+[[package]]
+name = "tish-winint"
+version = "0.1.0"
+dependencies = [
+ "glow",
+ "glutin",
+ "glutin-winit",
+ "raw-window-handle",
+ "serde",
  "toml",
  "winit",
 ]

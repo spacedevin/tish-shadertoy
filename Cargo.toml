@@ -1,3 +1,7 @@
+[workspace]
+members = ["crates/tish_winint"]
+resolver = "2"
+
 [package]
 name = "tish-shadertoy"
 version = "0.1.0"
@@ -11,6 +15,7 @@ name = "tish-shadertoy-run"
 path = "src/bin/tish-shadertoy-run.rs"
 
 [dependencies]
+tish_winint = { path = "crates/tish_winint", package = "tish-winint" }
 tishlang_core = { path = "../tish/crates/tish_core" }
 tishlang_eval = { path = "../tish/crates/tish_eval", features = ["process", "fs"] }
 tishlang_parser = { path = "../tish/crates/tish_parser" }
