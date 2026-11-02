@@ -41,8 +41,8 @@ npm install
 npm start
 ```
 
-`npm start` builds the pumped example with `tish build` and runs it on [`shaders/`](shaders/), switching to
-the next shader every 8 seconds. Close the window or press **Escape** to quit.
+`npm start` builds the pumped example with `tish build` (a couple of minutes the first time; it reuses the
+binary after that) and runs it on [`shaders/`](shaders/), switching to the next shader every 8 seconds. Close the window or press **Escape** to quit.
 
 `tish:shadertoy` is a native module, so it runs from a compiled Tish program: `tish build` turns the `.tish`
 source into a native binary with the module linked in. (`tish run`, the interpreter, can't load third-party
