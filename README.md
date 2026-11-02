@@ -31,24 +31,37 @@ Tish in control of the loop. It is built for real community shaders, unmodified:
 
 ## Quick start
 
-You need Rust (`cargo`) and a GPU with OpenGL 3.3 or a compatible GLES fallback. The Tish crates come from
-crates.io, so nothing else needs to be checked out.
+You need Node (for the `tish` CLI), Rust (`cargo`, which `tish build` uses to compile), and a GPU with
+OpenGL 3.3 or a compatible GLES fallback.
 
 ```bash
 git clone https://github.com/spacedevin/tish-shadertoy
 cd tish-shadertoy
-cargo run --release --bin tish-shadertoy-run -- src/main.tish shaders/7cjGRR.glsl
+npm install
+npm start
 ```
 
-The last argument is the shader: any UTF-8 file containing a Shadertoy-style image pass. Close the window or
-press **Escape** to quit. To try every bundled shader at once (in parallel, with debug logging), run
-`./run-all-shaders-debug.sh`.
+`npm start` builds the pumped example with `tish build` and runs it on [`shaders/`](shaders/), switching to
+the next shader every 8 seconds. Close the window or press **Escape** to quit.
 
-## Using it from Tish
+`tish:shadertoy` is a native module, so it runs from a compiled Tish program: `tish build` turns the `.tish`
+source into a native binary with the module linked in. (`tish run`, the interpreter, can't load third-party
+native modules.)
 
-The `tish:shadertoy` module has two ways in.
+## Examples
 
-**Blocking** — open the viewer and return when the window closes:
+Two small programs, one for each way of using the module. Build either with `tish build` and point it at a
+shader:
+
+```bash
+npm run build                                        # both, into target/
+target/blocking shaders/XstXR2.glsl
+target/pumped shaders/7cjGRR.glsl                    # one shader
+target/pumped shaders/                               # every shader in a folder, 8 seconds each
+```
+
+**[`examples/blocking`](examples/blocking/main.tish)** — the simplest use: open a shader and block until the
+window closes.
 
 ```js
 import { readFile } from 'tish:fs'
@@ -57,32 +70,50 @@ import { run } from 'tish:shadertoy'
 run(readFile('shaders/XstXR2.glsl'))
 ```
 
-**Pumped** — keep control of the loop and do your own work between frames. This is what
-[`src/main.tish`](src/main.tish) does:
+**[`examples/pumped`](examples/pumped/main.tish)** — Tish keeps control of the loop. `openPumpable` opens the
+window without blocking and each `pump()` draws one frame and returns, so the program can do its own work in
+between. The example uses that to cycle through a folder of shaders with `reloadShader` and keep the title
+current:
 
 ```js
 import { readFile } from 'tish:fs'
 import { openPumpable, pump, setWindowTitle, reloadShader } from 'tish:shadertoy'
 
 openPumpable(readFile('shaders/mtyGWy.glsl'))
-setWindowTitle('My visualiser')
+let frame = 0
 while (pump()) {
-  // timers, an HTTP queue, file watching… then:
-  // reloadShader(newSource)
+  frame = frame + 1
+  if (frame === 1) {
+    setWindowTitle('My visualiser') // the window exists once the first pump() has run
+  }
+  // timers, a queue, file watching… and reloadShader(newSource) whenever you like
 }
 ```
 
 | Function | |
 |---|---|
 | `run(code)` | Open the viewer and block until the window closes. |
-| `openPumpable(code)` | Open the window without blocking; returns `false` if it is already open or GL fails to start. |
-| `pump()` | Draw a frame and process window events; returns `false` once the window is closed. Waits about 1 ms inside winit by default so the loop is not CPU-bound (`TISH_SHADER_PUMP_TIMEOUT_MS` changes it). |
-| `setWindowTitle(title)` | Set the window title. |
+| `openPumpable(code)` | Open the viewer without blocking; returns `false` if it is already open or GL fails to start. |
+| `pump()` | Draw a frame and handle window events; returns `false` once the window is closed. Waits about 1 ms inside winit by default so the loop isn't CPU-bound (`TISH_SHADER_PUMP_TIMEOUT_MS` changes it). |
+| `setWindowTitle(title)` | Set the window title. Takes effect once the window exists, after the first `pump()`. |
 | `reloadShader(code)` | Swap in new shader source without reopening the window. |
 
-`tish:winint` exposes `version` for the bundled [`crates/tish_winint`](crates/tish_winint) window shell
-(winit + glutin + glow). Rust programs can embed the viewer directly with
-`tish_shadertoy::run_viewer_with_idle` for a pumped event loop alongside other native work.
+`readFile` returns an `{ error }` object rather than a string when a file can't be read; both examples check
+for that and exit with a clear message.
+
+## Using it in your own project
+
+Add `tish-shadertoy` as a dependency next to the Tish CLI, then build your program with `tish build`:
+
+```bash
+npm install --save-dev @tishlang/tish
+npm install github:spacedevin/tish-shadertoy
+npx tish build main.tish -o my-visualiser
+./my-visualiser
+```
+
+`tish build` finds the native module through `node_modules/tish-shadertoy` (its `package.json` declares the
+crate and the `shadertoy_object` export) and compiles it into your binary.
 
 ## Hotkeys
 
@@ -110,8 +141,7 @@ for little gain. Some shaders supersample on purpose (Inigo Quilez's distance-fu
 2×2 per pixel, about 4× the work) — lower `AA` in the file if you need the speed.
 
 ```bash
-TISH_SHADER_RENDER_SCALE=.5 TISH_SHADER_WIDTH=1024 TISH_SHADER_HEIGHT=1024 \
-  cargo run --release --bin tish-shadertoy-run -- src/main.tish shaders/7cjGRR.glsl
+TISH_SHADER_RENDER_SCALE=.5 TISH_SHADER_WIDTH=1024 TISH_SHADER_HEIGHT=1024 target/pumped shaders/7cjGRR.glsl
 ```
 
 ## Compatibility
@@ -165,13 +195,14 @@ Only the single image pass runs.
 
 | Path | |
 |---|---|
-| [`src/main.tish`](src/main.tish) | The CLI script: reads the shader named on the command line and runs a pumped loop. |
-| [`src/lib.rs`](src/lib.rs) | The `tish:shadertoy` module and shader preamble. |
+| [`examples/blocking`](examples/blocking/main.tish) | The blocking example (`run`). |
+| [`examples/pumped`](examples/pumped/main.tish) | The pumped example (`openPumpable` / `pump` / `reloadShader`). |
+| [`src/lib.rs`](src/lib.rs) | The viewer window, event handling and shader preamble. |
 | [`src/renderer.rs`](src/renderer.rs) | The OpenGL full-screen fragment pass: uniforms, texture channels and drawing. |
-| [`src/pump_session.rs`](src/pump_session.rs) | The non-blocking `openPumpable` / `pump` session. |
+| [`src/pump_session.rs`](src/pump_session.rs) | The `tish:shadertoy` exports (`shadertoy_object`) and the non-blocking `openPumpable` / `pump` session. |
 | [`src/compat.rs`](src/compat.rs) | The WebGL-to-desktop source rewrites. |
-| [`src/bin/tish-shadertoy-run.rs`](src/bin/tish-shadertoy-run.rs) | The runner binary: a Tish interpreter with `tish:shadertoy` built in. |
 | [`crates/tish_winint`](crates/tish_winint) | The winit + glutin + glow window shell and hotkeys. |
+| [`package.json`](package.json) | Declares the native module for `tish build`, plus the build scripts. |
 | [`shaders/`](shaders/) | Example shaders, with credits. |
 
 ## License

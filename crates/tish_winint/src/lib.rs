@@ -1,4 +1,4 @@
-//! winit + glutin + glow window shell for Tish embedders (`tish:winint`).
+//! winit + glutin + glow window shell used by tish-shadertoy.
 
 pub mod gl_window;
 pub mod hotkeys;

@@ -10,15 +10,9 @@ description = "Run Shadertoy GLSL shaders in a native OpenGL window, driven from
 license = "MIT"
 repository = "https://github.com/spacedevin/tish-shadertoy"
 
-[[bin]]
-name = "tish-shadertoy-run"
-path = "src/bin/tish-shadertoy-run.rs"
-
 [dependencies]
 tish_winint = { path = "crates/tish_winint", package = "tish-winint" }
 tishlang_core = "4.2.5"
-tishlang_eval = { version = "4.2.5", features = ["process", "fs", "regex"] }
-tishlang_parser = "4.2.5"
 winit = "0.30.13"
 glutin = "0.32.3"
 glutin-winit = "0.5.0"

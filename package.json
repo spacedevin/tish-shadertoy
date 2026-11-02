@@ -9,12 +9,20 @@
     "export": "shadertoy_object"
   },
   "scripts": {
-    "build": "cargo build --bin tish-shadertoy-run",
-    "start": "cargo run --bin tish-shadertoy-run -- src/main.tish"
+    "build:blocking": "tish build examples/blocking/main.tish -o target/blocking",
+    "build:pumped": "tish build examples/pumped/main.tish -o target/pumped",
+    "build": "npm run build:blocking && npm run build:pumped",
+    "start": "npm run build:pumped && target/pumped shaders/",
+    "lint": "tish-lint examples && tish-format --check examples/blocking/main.tish && tish-format --check examples/pumped/main.tish"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/spacedevin/tish-shadertoy"
+  },
+  "devDependencies": {
+    "@tishlang/tish": "^4.2.5",
+    "@tishlang/tish-lint": "^4.2.5",
+    "@tishlang/tish-format": "^4.2.5"
   }
 }

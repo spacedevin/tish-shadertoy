@@ -1,26 +1,22 @@
-//! Native `tish:shadertoy` and `tish:winint` modules: GL fragment viewer + reusable window shell ([`tish_winint`]).
+//! Native `tish:shadertoy` module for `tish build`: a GL fragment viewer on the reusable window shell ([`tish_winint`]).
 
 mod channels;
 mod compat;
 mod pump_session;
 mod renderer;
 
-/// Local workspace crate: window + GL shell ([`tish:winint`](https://github.com/spacedevin/tish-shadertoy/tree/main/crates/tish_winint)).
+/// Local workspace crate: the window + GL shell ([`crates/tish_winint`](https://github.com/spacedevin/tish-shadertoy/tree/main/crates/tish_winint)).
 pub use tish_winint;
 
 pub use pump_session::shadertoy_object;
 pub use renderer::{ShadertoyInput, ShadertoyRenderer};
 
-use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use glutin::config::ConfigTemplateBuilder;
 use glutin_winit::DisplayBuilder;
 use tish_winint::{load_hotkeys, GlWindowApp, GlWindowHost, HotkeysLoadOptions};
 use tishlang_core::NativeFn as CoreNativeFn;
-use tishlang_eval::value_convert::{core_to_eval, eval_to_core};
-use tishlang_eval::{PropMap, TishNativeModule, Value as EvalValue};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
@@ -607,124 +603,4 @@ pub fn run_viewer_with_idle(shader_code: &str, mut on_idle: impl FnMut()) -> Res
         }
     }
     app.take_exit_result()
-}
-
-fn winint_version(_args: &[EvalValue]) -> Result<EvalValue, String> {
-    Ok(EvalValue::String("0.1.0".into()))
-}
-
-fn shadertoy_run(args: &[EvalValue]) -> Result<EvalValue, String> {
-    let code = args
-        .first()
-        .map(|v| v.to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "shadertoy.run: expected non-empty shader source string".to_string())?;
-    run_viewer(&code)?;
-    Ok(EvalValue::Null)
-}
-
-fn shadertoy_open_pumpable_eval(args: &[EvalValue]) -> Result<EvalValue, String> {
-    let code = args
-        .first()
-        .map(|v| v.to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "openPumpable: expected non-empty shader string".to_string())?;
-    let on_key = match args.get(1) {
-        None | Some(EvalValue::Null) => None,
-        Some(EvalValue::Object(o)) => {
-            let v = o
-                .borrow()
-                .strings
-                .get(&Arc::from("onKeyDown"))
-                .cloned()
-                .unwrap_or(EvalValue::Null);
-            match eval_to_core(&v) {
-                Ok(tishlang_core::Value::Function(f)) => Some(f),
-                Ok(tishlang_core::Value::Null) => None,
-                Ok(_) => {
-                    return Err("openPumpable: onKeyDown must be a function or null".to_string());
-                }
-                Err(_) => {
-                    eprintln!(
-                        "tish:shadertoy: onKeyDown (tree-walk fn) unsupported in tish-shadertoy-run; omit or use `tish build`."
-                    );
-                    None
-                }
-            }
-        }
-        Some(_) => {
-            return Err(
-                "openPumpable: second argument must be null or an options object".to_string(),
-            );
-        }
-    };
-    Ok(core_to_eval(crate::pump_session::open_pumpable_inner(
-        code, on_key,
-    )))
-}
-
-fn shadertoy_pump_eval(args: &[EvalValue]) -> Result<EvalValue, String> {
-    let ca: Vec<tishlang_core::Value> = args.iter().map(eval_to_core).collect::<Result<_, _>>()?;
-    Ok(core_to_eval(crate::pump_session::pump(&ca)))
-}
-
-fn shadertoy_set_window_title_eval(args: &[EvalValue]) -> Result<EvalValue, String> {
-    let ca: Vec<tishlang_core::Value> = args.iter().map(eval_to_core).collect::<Result<_, _>>()?;
-    Ok(core_to_eval(crate::pump_session::set_window_title(&ca)))
-}
-
-fn shadertoy_reload_shader_eval(args: &[EvalValue]) -> Result<EvalValue, String> {
-    let ca: Vec<tishlang_core::Value> = args.iter().map(eval_to_core).collect::<Result<_, _>>()?;
-    Ok(core_to_eval(crate::pump_session::reload_shader(&ca)))
-}
-
-/// Registered with `Evaluator::with_modules` for `import { run } from 'tish:shadertoy'`.
-pub struct ShadertoyModule;
-
-impl TishNativeModule for ShadertoyModule {
-    fn name(&self) -> &'static str {
-        "Shadertoy"
-    }
-
-    fn register(&self) -> HashMap<Arc<str>, EvalValue> {
-        HashMap::new()
-    }
-
-    fn virtual_builtin_modules(&self) -> Vec<(&'static str, EvalValue)> {
-        let mut exports = PropMap::default();
-        exports.insert("run".into(), EvalValue::Native(shadertoy_run));
-        exports.insert(
-            "openPumpable".into(),
-            EvalValue::Native(shadertoy_open_pumpable_eval),
-        );
-        exports.insert("pump".into(), EvalValue::Native(shadertoy_pump_eval));
-        exports.insert(
-            "setWindowTitle".into(),
-            EvalValue::Native(shadertoy_set_window_title_eval),
-        );
-        exports.insert(
-            "reloadShader".into(),
-            EvalValue::Native(shadertoy_reload_shader_eval),
-        );
-        vec![("tish:shadertoy", EvalValue::object(exports))]
-    }
-}
-
-/// `import { version } from 'tish:winint'` — window/GL shell crate ([`tish_winint`]).
-pub struct WinintModule;
-
-impl TishNativeModule for WinintModule {
-    fn name(&self) -> &'static str {
-        "Winint"
-    }
-
-    fn register(&self) -> HashMap<Arc<str>, EvalValue> {
-        HashMap::new()
-    }
-
-    fn virtual_builtin_modules(&self) -> Vec<(&'static str, EvalValue)> {
-        let mut exports = PropMap::default();
-        exports.insert("version".into(), EvalValue::Native(winint_version));
-        vec![("tish:winint", EvalValue::object(exports))]
-    }
 }
