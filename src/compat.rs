@@ -42,8 +42,8 @@ pub fn strip_float_f_suffix(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut i = 0;
     while i < b.len() {
-        let starts_float = b[i].is_ascii_digit()
-            || (b[i] == b'.' && i + 1 < b.len() && b[i + 1].is_ascii_digit());
+        let starts_float =
+            b[i].is_ascii_digit() || (b[i] == b'.' && i + 1 < b.len() && b[i + 1].is_ascii_digit());
         if starts_float {
             let start = i;
             while i < b.len() && b[i].is_ascii_digit() {
@@ -140,10 +140,7 @@ fn try_multi_float_decl(line: &str) -> Option<String> {
         return None;
     }
     let ind = indent_of(line);
-    let inits: Vec<String> = parts
-        .iter()
-        .map(|p| format!("{p} = 0.0"))
-        .collect();
+    let inits: Vec<String> = parts.iter().map(|p| format!("{p} = 0.0")).collect();
     Some(format!("{ind}float {};", inits.join(", ")))
 }
 
@@ -357,8 +354,8 @@ pub fn rewrite_main_image_out_vec4_to_inout(source: &str) -> String {
     while i + needle.len() <= bytes.len() {
         let hit = bytes[i..i + needle.len()] == *needle;
         let before_ok = i == 0 || !is_ident_continue_byte(bytes[i - 1]);
-        let after_ok = i + needle.len() >= bytes.len()
-            || !is_ident_continue_byte(bytes[i + needle.len()]);
+        let after_ok =
+            i + needle.len() >= bytes.len() || !is_ident_continue_byte(bytes[i + needle.len()]);
         if !hit || !before_ok || !after_ok {
             i += 1;
             continue;
@@ -552,10 +549,7 @@ fn int_idents_from_for_init_clause(init: &str) -> HashSet<String> {
             continue;
         }
         let b = p.as_bytes();
-        if b.len() >= 3
-            && &b[0..3] == b"int"
-            && (b.len() == 3 || !is_ident_continue_byte(b[3]))
-        {
+        if b.len() >= 3 && &b[0..3] == b"int" && (b.len() == 3 || !is_ident_continue_byte(b[3])) {
             let rest = p.get(3..).unwrap_or("").trim_start();
             let name = rest
                 .split(|c: char| c == '=' || c.is_whitespace())
@@ -564,13 +558,13 @@ fn int_idents_from_for_init_clause(init: &str) -> HashSet<String> {
             if let Some(n) = name {
                 out.insert(n.to_string());
             }
-        } else if !p.contains("*=")
-            && !p.contains("+=")
-            && !p.contains("-=")
-            && !p.contains("/=")
-        {
+        } else if !p.contains("*=") && !p.contains("+=") && !p.contains("-=") && !p.contains("/=") {
             // `int i=0, j=0` → second segment is ` j=0` (no `int` keyword).
-            let name = p.split('=').next().map(str::trim).filter(|s| is_glsl_ident(s));
+            let name = p
+                .split('=')
+                .next()
+                .map(str::trim)
+                .filter(|s| is_glsl_ident(s));
             if let Some(n) = name {
                 out.insert(n.to_string());
             }

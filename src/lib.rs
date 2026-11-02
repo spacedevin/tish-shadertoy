@@ -19,8 +19,8 @@ use glutin::config::ConfigTemplateBuilder;
 use glutin_winit::DisplayBuilder;
 use tish_winint::{load_hotkeys, GlWindowApp, GlWindowHost, HotkeysLoadOptions};
 use tishlang_core::NativeFn as CoreNativeFn;
-use tishlang_eval::{PropMap, TishNativeModule, Value as EvalValue};
 use tishlang_eval::value_convert::{core_to_eval, eval_to_core};
+use tishlang_eval::{PropMap, TishNativeModule, Value as EvalValue};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
@@ -125,7 +125,9 @@ fn build_fragment_source(user: &str) -> String {
     let (user, host_pragmas) = compat::extract_host_pragmas(user);
     let user = preprocess_user_code(&user);
     let mat2_shim = if user.contains("tish_mat2_from_vec4") {
-        eprintln!("tish-shadertoy: R-macro mat2(cos(vec4)) expanded for Apple GL (tish_mat2_from_vec4)");
+        eprintln!(
+            "tish-shadertoy: R-macro mat2(cos(vec4)) expanded for Apple GL (tish_mat2_from_vec4)"
+        );
         "mat2 tish_mat2_from_vec4(vec4 cs) { return mat2(cs.x, cs.y, cs.z, cs.w); }\n"
     } else {
         ""
@@ -155,7 +157,9 @@ fn build_fragment_source(user: &str) -> String {
             std::env::var("TISH_SHADER_DISABLE_POST_MAIN_RGB_LINEAR_CLAMP").as_deref(),
             Ok("1" | "true" | "on")
         ) {
-        eprintln!("tish-shadertoy: host post-main rgb linear clamp (// tish:post-main-rgb-linear-clamp)");
+        eprintln!(
+            "tish-shadertoy: host post-main rgb linear clamp (// tish:post-main-rgb-linear-clamp)"
+        );
         r#"
     _tish_acc.rgb = clamp(_tish_acc.rgb * 0.5 + vec3(0.5), 0.0, 1.0);"#
     } else {
@@ -165,7 +169,9 @@ fn build_fragment_source(user: &str) -> String {
         std::env::var("TISH_SHADER_FRAGCOORD_Y_FLIP").as_deref(),
         Ok("1" | "true" | "on")
     ) {
-        eprintln!("tish-shadertoy: mainImage uses flipped Y fragCoord (TISH_SHADER_FRAGCOORD_Y_FLIP=1)");
+        eprintln!(
+            "tish-shadertoy: mainImage uses flipped Y fragCoord (TISH_SHADER_FRAGCOORD_Y_FLIP=1)"
+        );
         "vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y)"
     } else if matches!(
         std::env::var("TISH_SHADER_FRAGCOORD_SUB_HALF").as_deref(),
@@ -309,7 +315,9 @@ mod built_fs_tests {
         assert!(
             fs.contains("clamp(_tish_acc.rgb * 0.5 + vec3(0.5)"),
             "expected host linear clamp after mainImage; got excerpt:\n{}",
-            fs.lines().find(|l| l.contains("_tish_acc.rgb")).unwrap_or("")
+            fs.lines()
+                .find(|l| l.contains("_tish_acc.rgb"))
+                .unwrap_or("")
         );
     }
 
@@ -334,23 +342,32 @@ mod built_fs_tests {
         assert!(
             fs.contains("i = 0.0;") && fs.contains("for (;") && fs.contains("fragColor *= i"),
             "expected for-init compat rewrite (split lines); excerpt:\n{}",
-            fs.lines().enumerate().skip(105).take(40).fold(String::new(), |mut a, (i, l)| {
-                use std::fmt::Write;
-                let _ = writeln!(a, "{}: {}", i + 1, l);
-                a
-            })
+            fs.lines()
+                .enumerate()
+                .skip(105)
+                .take(40)
+                .fold(String::new(), |mut a, (i, l)| {
+                    use std::fmt::Write;
+                    let _ = writeln!(a, "{}: {}", i + 1, l);
+                    a
+                })
         );
         assert!(
             fs.contains("i += 1.0"),
             "expected float loop rewrite; excerpt:\n{}",
-            fs.lines().enumerate().skip(105).take(30).fold(String::new(), |mut a, (i, l)| {
-                use std::fmt::Write;
-                let _ = writeln!(a, "{}: {}", i + 1, l);
-                a
-            })
+            fs.lines()
+                .enumerate()
+                .skip(105)
+                .take(30)
+                .fold(String::new(), |mut a, (i, l)| {
+                    use std::fmt::Write;
+                    let _ = writeln!(a, "{}: {}", i + 1, l);
+                    a
+                })
         );
         assert!(
-            !fs.lines().any(|l| l.contains("i++") && !l.trim_start().starts_with("//")),
+            !fs.lines()
+                .any(|l| l.contains("i++") && !l.trim_start().starts_with("//")),
             "raw i++ should not appear outside comments"
         );
         assert!(
@@ -377,7 +394,9 @@ mod built_fs_tests {
 
     #[test]
     fn fragment_main_seeds_opaque_black_before_main_image() {
-        let fs = super::build_fragment_source("void mainImage(out vec4 c, in vec2 u) { c = vec4(1.0); }");
+        let fs = super::build_fragment_source(
+            "void mainImage(out vec4 c, in vec2 u) { c = vec4(1.0); }",
+        );
         assert!(
             fs.contains("vec4 _tish_acc = vec4(0.0, 0.0, 0.0, 1.0);"),
             "main() should seed accumulator (opaque black a=1) before mainImage"
@@ -471,12 +490,7 @@ impl GlWindowHost for ShadertoyHost {
     fn window_attributes(&self) -> WindowAttributes {
         tish_winint::window_attributes(
             "Tish Shadertoy",
-            tish_winint::window_physical_size(
-                "TISH_SHADER_WIDTH",
-                "TISH_SHADER_HEIGHT",
-                1280,
-                720,
-            ),
+            tish_winint::window_physical_size("TISH_SHADER_WIDTH", "TISH_SHADER_HEIGHT", 1280, 720),
         )
     }
 
@@ -501,12 +515,7 @@ impl GlWindowHost for ShadertoyHost {
 
     fn on_viewport_resized(&mut self, _gl: &glow::Context, _width: u32, _height: u32) {}
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window: &Window,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, window: &Window, event: WindowEvent) {
         match event {
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
@@ -531,7 +540,11 @@ impl GlWindowHost for ShadertoyHost {
                 self.mouse_xy = (position.x as f32, (ps.height as f32) - position.y as f32);
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let v = if state == ElementState::Pressed { 1.0 } else { 0.0 };
+                let v = if state == ElementState::Pressed {
+                    1.0
+                } else {
+                    0.0
+                };
                 match button {
                     MouseButton::Left => {
                         self.mouse_buttons.0 = v;
@@ -568,18 +581,13 @@ pub fn run_viewer(shader_code: &str) -> Result<(), String> {
         Ok("0" | "false" | "off")
     );
     let mut app = GlWindowApp::new(template, display_builder, host, vsync);
-    event_loop
-        .run_app(&mut app)
-        .map_err(|e| e.to_string())?;
+    event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
     app.take_exit_result()
 }
 
 /// Pump winit with **zero timeout** between frames and call `on_idle` each time the loop continues.
 /// Same window lifecycle as [`run_viewer`], but allows embedding other work between pumps (Rust-side).
-pub fn run_viewer_with_idle(
-    shader_code: &str,
-    mut on_idle: impl FnMut(),
-) -> Result<(), String> {
+pub fn run_viewer_with_idle(shader_code: &str, mut on_idle: impl FnMut()) -> Result<(), String> {
     use tish_winint::PumpStatus;
 
     let mut event_loop = EventLoop::new().map_err(|e| e.to_string())?;
@@ -634,9 +642,7 @@ fn shadertoy_open_pumpable_eval(args: &[EvalValue]) -> Result<EvalValue, String>
                 Ok(tishlang_core::Value::Function(f)) => Some(f),
                 Ok(tishlang_core::Value::Null) => None,
                 Ok(_) => {
-                    return Err(
-                        "openPumpable: onKeyDown must be a function or null".to_string(),
-                    );
+                    return Err("openPumpable: onKeyDown must be a function or null".to_string());
                 }
                 Err(_) => {
                     eprintln!(
@@ -647,33 +653,28 @@ fn shadertoy_open_pumpable_eval(args: &[EvalValue]) -> Result<EvalValue, String>
             }
         }
         Some(_) => {
-            return Err("openPumpable: second argument must be null or an options object".to_string());
+            return Err(
+                "openPumpable: second argument must be null or an options object".to_string(),
+            );
         }
     };
-    Ok(core_to_eval(crate::pump_session::open_pumpable_inner(code, on_key)))
+    Ok(core_to_eval(crate::pump_session::open_pumpable_inner(
+        code, on_key,
+    )))
 }
 
 fn shadertoy_pump_eval(args: &[EvalValue]) -> Result<EvalValue, String> {
-    let ca: Vec<tishlang_core::Value> = args
-        .iter()
-        .map(eval_to_core)
-        .collect::<Result<_, _>>()?;
+    let ca: Vec<tishlang_core::Value> = args.iter().map(eval_to_core).collect::<Result<_, _>>()?;
     Ok(core_to_eval(crate::pump_session::pump(&ca)))
 }
 
 fn shadertoy_set_window_title_eval(args: &[EvalValue]) -> Result<EvalValue, String> {
-    let ca: Vec<tishlang_core::Value> = args
-        .iter()
-        .map(eval_to_core)
-        .collect::<Result<_, _>>()?;
+    let ca: Vec<tishlang_core::Value> = args.iter().map(eval_to_core).collect::<Result<_, _>>()?;
     Ok(core_to_eval(crate::pump_session::set_window_title(&ca)))
 }
 
 fn shadertoy_reload_shader_eval(args: &[EvalValue]) -> Result<EvalValue, String> {
-    let ca: Vec<tishlang_core::Value> = args
-        .iter()
-        .map(eval_to_core)
-        .collect::<Result<_, _>>()?;
+    let ca: Vec<tishlang_core::Value> = args.iter().map(eval_to_core).collect::<Result<_, _>>()?;
     Ok(core_to_eval(crate::pump_session::reload_shader(&ca)))
 }
 
@@ -705,10 +706,7 @@ impl TishNativeModule for ShadertoyModule {
             "reloadShader".into(),
             EvalValue::Native(shadertoy_reload_shader_eval),
         );
-        vec![(
-            "tish:shadertoy",
-            EvalValue::object(exports),
-        )]
+        vec![("tish:shadertoy", EvalValue::object(exports))]
     }
 }
 
@@ -727,9 +725,6 @@ impl TishNativeModule for WinintModule {
     fn virtual_builtin_modules(&self) -> Vec<(&'static str, EvalValue)> {
         let mut exports = PropMap::default();
         exports.insert("version".into(), EvalValue::Native(winint_version));
-        vec![(
-            "tish:winint",
-            EvalValue::object(exports),
-        )]
+        vec![("tish:winint", EvalValue::object(exports))]
     }
 }

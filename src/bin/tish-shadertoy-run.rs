@@ -10,14 +10,11 @@ use tishlang_parser;
 
 fn main() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
-    let script_path = args
-        .get(1)
-        .map(|s| s.as_str())
-        .unwrap_or("./src/main.tish");
+    let script_path = args.get(1).map(|s| s.as_str()).unwrap_or("./src/main.tish");
 
     let path = Path::new(script_path);
-    let source = fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read {}: {}", script_path, e))?;
+    let source =
+        fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {}", script_path, e))?;
 
     let program = tishlang_parser::parse(&source)?;
     let shadertoy = ShadertoyModule;

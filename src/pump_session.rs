@@ -121,10 +121,7 @@ pub fn pump(args: &[Value]) -> Value {
         let Some(sess) = b.as_mut() else {
             return Value::Bool(false);
         };
-        match sess
-            .app
-            .pump_events(&mut sess.event_loop, timeout)
-        {
+        match sess.app.pump_events(&mut sess.event_loop, timeout) {
             PumpStatus::Exit(_) => {
                 let _ = sess.app.take_exit_result();
                 *b = None;
@@ -137,7 +134,10 @@ pub fn pump(args: &[Value]) -> Value {
 
 /// `setWindowTitle(title)` — no-op if the window is not created yet.
 pub fn set_window_title(args: &[Value]) -> Value {
-    let title = args.first().map(|v| v.to_display_string()).unwrap_or_default();
+    let title = args
+        .first()
+        .map(|v| v.to_display_string())
+        .unwrap_or_default();
     if title.is_empty() {
         return Value::Null;
     }

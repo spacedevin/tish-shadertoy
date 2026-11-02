@@ -70,11 +70,7 @@ pub fn load(opts: &HotkeysLoadOptions) -> HotkeysConfig {
         match std::fs::read_to_string(path) {
             Ok(s) => match toml::from_str::<FileRoot>(&s) {
                 Ok(root) => return root.into(),
-                Err(e) => eprintln!(
-                    "{}: {}: parse error: {e}",
-                    opts.log_prefix,
-                    path.display()
-                ),
+                Err(e) => eprintln!("{}: {}: parse error: {e}", opts.log_prefix, path.display()),
             },
             Err(e) => eprintln!("{}: {}: {e}", opts.log_prefix, path.display()),
         }

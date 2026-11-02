@@ -145,12 +145,7 @@ fn mouse_scaled_to_buffer(
     }
     let sx = buf_w as f32 / win_w as f32;
     let sy = buf_h as f32 / win_h as f32;
-    (
-        mouse.0 * sx,
-        mouse.1 * sy,
-        mouse.2 * sx,
-        mouse.3 * sy,
-    )
+    (mouse.0 * sx, mouse.1 * sy, mouse.2 * sx, mouse.3 * sy)
 }
 
 const BLIT_FS: &str = r#"#version 330 core
@@ -162,7 +157,6 @@ void main() {
     fragColor = texture(uBlitTex, uv);
 }
 "#;
-
 
 fn render_scale_from_env() -> f32 {
     std::env::var("TISH_SHADER_RENDER_SCALE")
@@ -229,7 +223,8 @@ impl ShadertoyRenderer {
                 gl.delete_program(program);
                 gl.delete_shader(vs);
                 return Err(
-                    "linked program has no active iResolution uniform (required for Shadertoy)".into(),
+                    "linked program has no active iResolution uniform (required for Shadertoy)"
+                        .into(),
                 );
             }
             self.program = Some(program);
@@ -283,18 +278,15 @@ impl ShadertoyRenderer {
             let mut ch_xy = [(1.0f32, 1.0f32); 4];
 
             for i in 0..4 {
-                let t = gl
-                    .create_texture()
-                    .map_err(|e| format!("texture: {e}"))?;
+                let t = gl.create_texture().map_err(|e| format!("texture: {e}"))?;
                 gl.bind_texture(glow::TEXTURE_2D, Some(t));
                 if let Some(ref rel) = paths[i] {
                     let (bytes, w, h) = if channels::is_builtin_noise_path(rel.as_path()) {
                         channels::procedural_noise_rgba(256, 256)
                     } else {
                         let full = base.join(rel);
-                        channels::load_rgba8(&full).map_err(|e| {
-                            format!("iChannel{i} {}: {e}", full.display())
-                        })?
+                        channels::load_rgba8(&full)
+                            .map_err(|e| format!("iChannel{i} {}: {e}", full.display()))?
                     };
                     gl.tex_image_2d(
                         glow::TEXTURE_2D,
@@ -332,16 +324,8 @@ impl ShadertoyRenderer {
                     glow::TEXTURE_MAG_FILTER,
                     glow::LINEAR as i32,
                 );
-                gl.tex_parameter_i32(
-                    glow::TEXTURE_2D,
-                    glow::TEXTURE_WRAP_S,
-                    glow::REPEAT as i32,
-                );
-                gl.tex_parameter_i32(
-                    glow::TEXTURE_2D,
-                    glow::TEXTURE_WRAP_T,
-                    glow::REPEAT as i32,
-                );
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::REPEAT as i32);
                 tex.push(t);
             }
             gl.bind_texture(glow::TEXTURE_2D, None);
@@ -556,7 +540,13 @@ impl ShadertoyRenderer {
         Ok(())
     }
 
-    pub fn draw_frame(&mut self, gl: &Rc<glow::Context>, w: u32, h: u32, input: &ShadertoyInput) -> Result<(), String> {
+    pub fn draw_frame(
+        &mut self,
+        gl: &Rc<glow::Context>,
+        w: u32,
+        h: u32,
+        input: &ShadertoyInput,
+    ) -> Result<(), String> {
         let now = Instant::now();
         let start = *self.start.get_or_insert(now);
         let i_time = now.duration_since(start).as_secs_f32();
@@ -590,9 +580,8 @@ impl ShadertoyRenderer {
         let year = local.year() as f32;
         let month = local.month() as f32;
         let day = local.day() as f32;
-        let sec_in_day = (local.hour() as f32) * 3600.0
-            + (local.minute() as f32) * 60.0
-            + local.second() as f32;
+        let sec_in_day =
+            (local.hour() as f32) * 3600.0 + (local.minute() as f32) * 60.0 + local.second() as f32;
 
         if self.program.is_none() {
             return Ok(());
@@ -621,7 +610,9 @@ impl ShadertoyRenderer {
         if use_low_res_pass {
             self.ensure_fbo(gl, rw, rh)?;
             unsafe {
-                let fbo = self.fbo.ok_or_else(|| "internal: missing FBO".to_string())?;
+                let fbo = self
+                    .fbo
+                    .ok_or_else(|| "internal: missing FBO".to_string())?;
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
                 gl.clear_color(0.0, 0.0, 0.0, 1.0);
                 gl.clear(glow::COLOR_BUFFER_BIT);
@@ -716,7 +707,15 @@ impl ShadertoyRenderer {
                 );
                 let mut c1 = [0u8; 4];
                 let mut c2 = [0u8; 4];
-                gl.read_pixels(8, 8, 1, 1, glow::RGBA, glow::UNSIGNED_BYTE, PixelPackData::Slice(Some(&mut c1)));
+                gl.read_pixels(
+                    8,
+                    8,
+                    1,
+                    1,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    PixelPackData::Slice(Some(&mut c1)),
+                );
                 gl.read_pixels(
                     (w.saturating_sub(9)) as i32,
                     (h.saturating_sub(9)) as i32,

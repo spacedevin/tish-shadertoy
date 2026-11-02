@@ -25,7 +25,10 @@ pub fn gl_config_picker(configs: Box<dyn Iterator<Item = Config> + '_>) -> Confi
         .expect("no GL config")
 }
 
-pub fn create_gl_context(window: &Window, gl_config: &Config) -> glutin::context::NotCurrentContext {
+pub fn create_gl_context(
+    window: &Window,
+    gl_config: &Config,
+) -> glutin::context::NotCurrentContext {
     let raw_window_handle = window.window_handle().ok().map(|h| h.as_raw());
     let context_attributes = ContextAttributesBuilder::new()
         .with_context_api(ContextApi::OpenGl(Some(Version::new(3, 3))))
@@ -47,7 +50,12 @@ pub fn create_gl_context(window: &Window, gl_config: &Config) -> glutin::context
 }
 
 /// Backing size in **physical pixels**.
-pub fn window_physical_size(width_var: &str, height_var: &str, default_w: u32, default_h: u32) -> PhysicalSize<u32> {
+pub fn window_physical_size(
+    width_var: &str,
+    height_var: &str,
+    default_w: u32,
+    default_h: u32,
+) -> PhysicalSize<u32> {
     let w = std::env::var(width_var)
         .ok()
         .and_then(|s| s.parse().ok())
@@ -96,12 +104,7 @@ pub trait GlWindowHost: 'static {
     fn on_viewport_resized(&mut self, gl: &glow::Context, width: u32, height: u32);
 
     /// Keyboard, mouse, and any events not handled by [`GlWindowApp`].
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window: &Window,
-        event: WindowEvent,
-    );
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, window: &Window, event: WindowEvent);
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop, window: &Window);
 
@@ -194,10 +197,7 @@ impl<H: GlWindowHost> ApplicationHandler for GlWindowApp<H> {
                 ) {
                     Ok((Some(w), c)) => (w, c),
                     Ok((None, _)) => {
-                        self.fail(
-                            event_loop,
-                            "GL display build returned no window".into(),
-                        );
+                        self.fail(event_loop, "GL display build returned no window".into());
                         return;
                     }
                     Err(e) => {
@@ -217,7 +217,11 @@ impl<H: GlWindowHost> ApplicationHandler for GlWindowApp<H> {
                         return;
                     }
                 };
-                match glutin_winit::finalize_window(event_loop, self.host.window_attributes(), &gl_config) {
+                match glutin_winit::finalize_window(
+                    event_loop,
+                    self.host.window_attributes(),
+                    &gl_config,
+                ) {
                     Ok(w) => (w, gl_config),
                     Err(e) => {
                         self.fail(event_loop, format!("window: {e}"));
@@ -227,14 +231,20 @@ impl<H: GlWindowHost> ApplicationHandler for GlWindowApp<H> {
             }
         };
 
-        let attrs = match window.build_surface_attributes(SurfaceAttributesBuilder::<WindowSurface>::new()) {
+        let attrs = match window
+            .build_surface_attributes(SurfaceAttributesBuilder::<WindowSurface>::new())
+        {
             Ok(a) => a,
             Err(e) => {
                 self.fail(event_loop, format!("surface attrs: {e}"));
                 return;
             }
         };
-        let gl_surface = match unsafe { gl_config.display().create_window_surface(&gl_config, &attrs) } {
+        let gl_surface = match unsafe {
+            gl_config
+                .display()
+                .create_window_surface(&gl_config, &attrs)
+        } {
             Ok(s) => s,
             Err(e) => {
                 self.fail(event_loop, format!("surface: {e}"));
@@ -279,11 +289,10 @@ impl<H: GlWindowHost> ApplicationHandler for GlWindowApp<H> {
             eprintln!("swap interval: {e:?}");
         }
 
-        assert!(
-            self.state
-                .replace(GlWindowSurfaceState { gl_surface, window })
-                .is_none()
-        );
+        assert!(self
+            .state
+            .replace(GlWindowSurfaceState { gl_surface, window })
+            .is_none());
     }
 
     fn window_event(
@@ -317,15 +326,15 @@ impl<H: GlWindowHost> ApplicationHandler for GlWindowApp<H> {
                 }
             }
             WindowEvent::Resized(size) => {
-                if let (Some(s), Some(gl_context)) = (self.state.as_ref(), self.gl_context.as_ref()) {
+                if let (Some(s), Some(gl_context)) = (self.state.as_ref(), self.gl_context.as_ref())
+                {
                     if size.width > 0 && size.height > 0 {
                         s.window.resize_surface(&s.gl_surface, gl_context);
                         if let Some(gl) = self.gl.as_ref() {
                             unsafe {
                                 gl.viewport(0, 0, size.width as i32, size.height as i32);
                             }
-                            self.host
-                                .on_viewport_resized(gl, size.width, size.height);
+                            self.host.on_viewport_resized(gl, size.width, size.height);
                         }
                     }
                 }
