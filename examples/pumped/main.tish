@@ -1,0 +1,68 @@
+// tish:shadertoy with Tish in control of the loop. openPumpable opens the window without blocking, and each
+// pump() draws a frame and returns, so the script can do its own work in between: here, cycling through
+// every shader in a folder with reloadShader.
+//
+//   npx tish build examples/pumped/main.tish -o target/pumped
+//   target/pumped shaders/            every shader in the folder, 8 seconds each
+//   target/pumped shaders/7cjGRR.glsl one shader
+
+import { readFile, readDir, isDir } from 'tish:fs'
+import { process } from 'tish:process'
+import { openPumpable, pump, setWindowTitle, reloadShader } from 'tish:shadertoy'
+
+let SECONDS_PER_SHADER = 8
+
+fn die(msg) {
+  console.error(msg)
+  process.exit(1)
+}
+
+// readFile returns { error } rather than a string when the file can't be read
+fn load(path) {
+  let code = readFile(path)
+  if (typeof code !== 'string') {
+    die('Cannot read shader ' + path + ': ' + code.error)
+  }
+  return code
+}
+
+let argv = process.argv
+if (argv.length < 2) {
+  die('Usage: pumped <shader.glsl | folder of shaders>')
+}
+let target = argv[argv.length - 1]
+
+let shaders = [target]
+if (isDir(target)) {
+  let dir = target
+  if (!dir.endsWith('/')) {
+    dir = dir + '/'
+  }
+  let names = readDir(dir).filter((n) => n.endsWith('.glsl'))
+  names.sort()
+  if (names.length === 0) {
+    die('No .glsl files in ' + target)
+  }
+  shaders = names.map((n) => dir + n)
+}
+
+let index = 0
+if (!openPumpable(load(shaders[index]))) {
+  die('Could not open the viewer window (see stderr for the GL error)')
+}
+
+// The window exists after the first pump(), so the title is set from inside the loop.
+let titled = false
+let switchedAt = Date.now()
+while (pump()) {
+  if (!titled) {
+    setWindowTitle(shaders[index] + '  (' + (index + 1) + '/' + shaders.length + ')')
+    titled = true
+  }
+  if (shaders.length > 1 && Date.now() - switchedAt > SECONDS_PER_SHADER * 1000) {
+    index = (index + 1) % shaders.length
+    reloadShader(load(shaders[index]))
+    switchedAt = Date.now()
+    titled = false
+  }
+}

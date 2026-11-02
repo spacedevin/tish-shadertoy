@@ -2,7 +2,7 @@
 name = "tish-winint"
 version = "0.1.0"
 edition = "2021"
-description = "winit + glutin + glow window shell for Tish native hosts (tish:winint)"
+description = "winit + glutin + glow window shell used by tish-shadertoy"
 license = "MIT"
 repository = "https://github.com/spacedevin/tish-shadertoy"
 

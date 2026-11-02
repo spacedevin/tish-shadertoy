@@ -36,7 +36,8 @@ Shadertoy's media library and are included only so that shader runs as it does o
 Copy the **Image** tab's code into a `.glsl` file here and run it:
 
 ```bash
-cargo run --release --bin tish-shadertoy-run -- src/main.tish shaders/<id>.glsl
+npm run build:pumped
+target/pumped shaders/<id>.glsl
 ```
 
 Only single-pass image shaders are supported (see the main README for what is and isn't implemented). Keep

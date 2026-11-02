@@ -1,0 +1,19 @@
+// The simplest way to use tish:shadertoy: open a shader and block until the window closes.
+//
+//   npx tish build examples/blocking/main.tish -o target/blocking
+//   target/blocking shaders/XstXR2.glsl
+
+import { readFile } from 'tish:fs'
+import { process } from 'tish:process'
+import { run } from 'tish:shadertoy'
+
+let path = process.argv.length > 1 ? process.argv[process.argv.length - 1] : 'shaders/XstXR2.glsl'
+
+// readFile returns { error } rather than a string when the file can't be read
+let code = readFile(path)
+if (typeof code !== 'string') {
+  console.error('Cannot read shader ' + path + ': ' + code.error)
+  process.exit(1)
+}
+
+run(code)
