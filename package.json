@@ -1,10 +1,20 @@
 {
   "name": "tish-shadertoy",
   "version": "0.1.0",
-  "description": "Shadertoy URL viewer for Tish (native OpenGL)",
+  "description": "Run Shadertoy GLSL shaders in a native OpenGL window, driven from Tish",
   "private": false,
+  "tish": {
+    "module": true,
+    "crate": "tish-shadertoy",
+    "export": "shadertoy_object"
+  },
   "scripts": {
     "build": "cargo build --bin tish-shadertoy-run",
     "start": "cargo run --bin tish-shadertoy-run -- src/main.tish"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spacedevin/tish-shadertoy"
   }
 }

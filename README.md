@@ -1,85 +1,181 @@
 # tish-shadertoy
 
-Minimal **Shadertoy-style** [Tish](https://tishlang.com/) **viewer**: read local GLSL (fragment with `mainImage`) and run it in a native **OpenGL 3.3** window (`winit` + `glutin` + `glow`). No editor.
+Run [Shadertoy](https://www.shadertoy.com/) shaders in a native OpenGL window, driven from
+[Tish](https://tishlang.com/). Point it at a GLSL file written for Shadertoy — the usual `mainImage` image
+pass — and it runs full screen in a native window. No browser, no editor.
 
-Example shaders live under [`shaders/`](shaders/).
+![Five of the bundled shaders running in the native window](docs/media/demo.gif)
 
-## Requirements
+<sub>[Full-quality video](docs/media/reel.mp4) · every frame above is the native viewer running a shader from [`shaders/`](shaders/).</sub>
 
-- Rust toolchain (`cargo`)
-- GPU with OpenGL 3.3 (or compatible GLES fallback)
+| | | |
+|---|---|---|
+| ![Neon tunnel](docs/media/7cjGRR.jpg) | ![Raymarched primitives](docs/media/Xds3zN.jpg) | ![Alien core](docs/media/4tcXRr.jpg) |
+| ![Kaleidoscope](docs/media/mtyGWy.jpg) | ![Particles](docs/media/tsXBzS.jpg) | ![Forest](docs/media/llfXW8.jpg) |
 
-## Build
+## Why
+
+Shadertoy shaders are written for WebGL in a browser tab. tish-shadertoy runs the same code on desktop
+OpenGL from a Tish script, so a shader can be a native visual — a background, a visualiser, a demo — with
+Tish in control of the loop. It is built for real community shaders, unmodified:
+
+- **The full Shadertoy uniform set** — `iResolution`, `iTime`, `iTimeDelta`, `iFrame`, `iFrameRate`, `iMouse`
+  (with Shadertoy's click-and-drag rules), `iDate`, `iSampleRate`, `iChannelResolution`, `iChannelTime`, and
+  `iGlobalTime`.
+- **WebGL-to-desktop compatibility fixes** — the gaps that usually turn a working Shadertoy shader black on
+  desktop GL are patched before compiling (see [Compatibility](#compatibility)).
+- **Texture channels** — `iChannel0`–`3` from image files, set per shader with a comment or from the
+  environment, plus a built-in procedural noise texture.
+- **Tuned for heavy raymarchers** — fixed physical resolution on HiDPI screens, an internal render scale, no
+  multisampling by default, and optional uncapped frame rate.
+
+## Quick start
+
+You need Rust (`cargo`) and a GPU with OpenGL 3.3 or a compatible GLES fallback. The Tish crates come from
+crates.io, so nothing else needs to be checked out.
 
 ```bash
+git clone https://github.com/spacedevin/tish-shadertoy
 cd tish-shadertoy
-cargo build --release --bin tish-shadertoy-run
+cargo run --release --bin tish-shadertoy-run -- src/main.tish shaders/7cjGRR.glsl
 ```
 
-Paths assume this repo sits next to the main [`tish`](https://github.com/tishlang/tish) tree (`../tish/crates/...`).
+The last argument is the shader: any UTF-8 file containing a Shadertoy-style image pass. Close the window or
+press **Escape** to quit. To try every bundled shader at once (in parallel, with debug logging), run
+`./run-all-shaders-debug.sh`.
 
-## Run
+## Using it from Tish
 
-```bash
-cargo run --bin tish-shadertoy-run -- src/main.tish shaders/XstXR2.glsl
+The `tish:shadertoy` module has two ways in.
+
+**Blocking** — open the viewer and return when the window closes:
+
+```js
+import { readFile } from 'tish:fs'
+import { run } from 'tish:shadertoy'
+
+run(readFile('shaders/XstXR2.glsl'))
 ```
 
-`argv[2]` is any path to a UTF-8 file containing the shader body (Shadertoy image-pass style).
+**Pumped** — keep control of the loop and do your own work between frames. This is what
+[`src/main.tish`](src/main.tish) does:
 
-Close the window or press **Escape** to quit.
+```js
+import { readFile } from 'tish:fs'
+import { openPumpable, pump, setWindowTitle, reloadShader } from 'tish:shadertoy'
 
-## Hotkeys (Milkdrop-style)
+openPumpable(readFile('shaders/mtyGWy.glsl'))
+setWindowTitle('My visualiser')
+while (pump()) {
+  // timers, an HTTP queue, file watching… then:
+  // reloadShader(newSource)
+}
+```
 
-Bindings live in **`hotkeys.toml`** in the current working directory (or set **`TISH_SHADER_HOTKEYS_PATH`**). Defaults are committed in this repo.
+| Function | |
+|---|---|
+| `run(code)` | Open the viewer and block until the window closes. |
+| `openPumpable(code)` | Open the window without blocking; returns `false` if it is already open or GL fails to start. |
+| `pump()` | Draw a frame and process window events; returns `false` once the window is closed. Waits about 1 ms inside winit by default so the loop is not CPU-bound (`TISH_SHADER_PUMP_TIMEOUT_MS` changes it). |
+| `setWindowTitle(title)` | Set the window title. |
+| `reloadShader(code)` | Swap in new shader source without reopening the window. |
 
-- **`[fps] toggle`** — show smoothed **FPS in the window title** (default **`F3`**). Press again to hide.
+`tish:winint` exposes `version` for the bundled [`crates/tish_winint`](crates/tish_winint) window shell
+(winit + glutin + glow). Rust programs can embed the viewer directly with
+`tish_shadertoy::run_viewer_with_idle` for a pumped event loop alongside other native work.
+
+## Hotkeys
+
+Bindings are Milkdrop-style and live in [`hotkeys.toml`](hotkeys.toml) in the working directory (or wherever
+`TISH_SHADER_HOTKEYS_PATH` points). Defaults:
+
+| Key | |
+|---|---|
+| `F3` | Toggle a smoothed FPS readout in the window title |
+| `Escape` | Quit |
 
 ## Performance
 
-The window uses a **fixed physical pixel size** (default **1280×720**), not a logical size, so HiDPI displays do not silently render at 2× or 3× resolution (which can make heavy raymarchers feel stuck under ~20 FPS).
+The window has a **fixed physical size** (1280×720 by default), not a logical one, so HiDPI displays don't
+silently render at 2× or 3× the pixels — which is what makes heavy raymarchers feel stuck under 20 FPS.
 
-TISH_SHADER_DEBUG=1 TISH_SHADER_COMPAT_TANH=1 TISH_SHADER_RENDER_SCALE=.5 TISH_SHADER_WIDTH=1024 TISH_SHADER_HEIGHT=1024 cargo run --bin tish-shadertoy-run -- src/main.tish shaders/7cjGRR.glsl
+| Variable | |
+|---|---|
+| `TISH_SHADER_WIDTH`, `TISH_SHADER_HEIGHT` | Backing resolution in physical pixels. |
+| `TISH_SHADER_RENDER_SCALE` | Internal render scale in (0, 1], default 1, clamped to 0.05–1.0. The `mainImage` pass runs at `window × scale` and is upscaled linearly; `0.5` is about 4× fewer fragment invocations. `iResolution` and `fragCoord` still match the full window, so Shadertoy math stays consistent. |
+| `TISH_SHADER_VSYNC=0` | Disable vsync to see uncapped frame rates while tuning (may tear). |
 
-- **`TISH_SHADER_WIDTH`** / **`TISH_SHADER_HEIGHT`** — override backing resolution (physical pixels).
-- **`TISH_SHADER_RENDER_SCALE`** — internal render scale in **(0, 1]** (default **1**). The heavy `mainImage` pass runs at `floor(window × scale)` pixels, then the result is **linearly upscaled** to the window. Example: `0.5` → about **4× fewer** fragment invocations; `iResolution` and `fragCoord` still match the full window so most Shadertoy math stays consistent. Clamped to **0.05..1.0**.
-- **`TISH_SHADER_VSYNC=0`** — disable vsync (`DontWait`); useful to see uncapped FPS while tuning (may tear).
+The GL config prefers **no multisampling**: on a single full-screen triangle MSAA multiplies fragment cost
+for little gain. Some shaders supersample on purpose (Inigo Quilez's distance-function demos with `AA 2` shade
+2×2 per pixel, about 4× the work) — lower `AA` in the file if you need the speed.
 
-The GL config picker prefers **no multisampling** (MSAA). The old behavior preferred the *highest* sample count, which could multiply fragment cost for little gain on a single full-screen triangle.
+```bash
+TISH_SHADER_RENDER_SCALE=.5 TISH_SHADER_WIDTH=1024 TISH_SHADER_HEIGHT=1024 \
+  cargo run --release --bin tish-shadertoy-run -- src/main.tish shaders/7cjGRR.glsl
+```
 
-Some shaders (e.g. IQ’s distance-function demos with **`AA 2`**) intentionally shade **2×2 supersampled** pixels — that is ~4× more work inside `mainImage`; lower `AA` in the file if you need speed.
+## Compatibility
 
-## Shadertoy compatibility and inputs
+Shadertoy runs WebGL (GLSL ES). Its docs tell authors to
+[initialize their variables](https://github.com/NatronGitHub/openfx-misc/blob/master/Shadertoy/Shadertoy.md),
+but plenty of community shaders rely on undefined reads behaving like zero in a browser — desktop OpenGL 3.3
+often doesn't, and Apple's GL-on-Metal can turn the undefined value into NaN and a black screen. Before
+compiling, the viewer patches the common cases:
 
-The [Shadertoy site](https://www.shadertoy.com/) runs **WebGL** (GLSL ES). Shadertoy’s docs tell authors to [initialize variables](https://github.com/NatronGitHub/openfx-misc/blob/master/Shadertoy/Shadertoy.md) — the runtime does **not** inject zero for you. Many community shaders still rely on **undefined reads** behaving like zero on common browsers; **desktop OpenGL 3.3** often does not, which shows up as black or garbage.
+| | Default | |
+|---|---|---|
+| `HW_PERFORMANCE` | on | Defined as `1` when the shader doesn't, as the site does; without it `#if HW_PERFORMANCE==0` fails on desktop GL. |
+| `TISH_SHADER_COMPAT_ZEROINIT` | on | Adds `= 0` / `= vec4(0.0)` to common uninitialized declarations (`vec4 lights;`, `float i,s,d;`). |
+| `TISH_SHADER_COMPAT_MAINIMAGE_INOUT` | on | Makes `mainImage`'s output `inout`, so shaders that read `fragColor` before writing it see zero rather than NaN on Apple/Metal. |
+| `TISH_SHADER_COMPAT_MAT2_COS` | on | Expands `mat2(cos(vec4))` into explicit components; it can produce NaN on Apple GL 4.1. |
+| `TISH_SHADER_COMPAT_SMOOTHSTEP` | on | Injects a safe `smoothstep`. |
+| `TISH_SHADER_COMPAT_FLOAT_INC` | on | Rewrites `floatVar++` / `++floatVar` to `+= 1.0`. |
+| `TISH_SHADER_COMPAT_FOR_FRAGMUL` | on | Splits `for (fragColor *= v; …)` into a separate statement and loop. |
+| `TISH_SHADER_COMPAT_TANH` | off | Replaces `tanh` with a rational version for extreme values where some drivers return NaN. |
 
-- **`TISH_SHADER_COMPAT_ZEROINIT`** — default **on**. A line-wise preprocessor adds `= 0` / `= vec4(0.0)` for common patterns (`vec4 lights;`, `float i,s,d;`, etc.). Set to **`0`** to disable if it breaks a shader.
+Set any of these to `0` (or `1` for the off-by-default ones) to change it. A few lower-level switches for
+debugging output and coordinates are documented in [`src/compat.rs`](src/compat.rs) and
+[`src/lib.rs`](src/lib.rs). `TISH_SHADER_DEBUG=1` logs which compatibility patches were applied and samples a pixel from the first frame, which helps when a shader renders black.
 
-**Uniforms** (besides those listed under MVP): **`iChannelTime[4]`** ( **`0`** for slots backed by an image file, **`iTime`** for the default 1×1 slot — video/audio sync is not modeled yet), **`iFrameRate`** (smoothed from frame delta), plus the existing **`iChannelResolution`** from real texture sizes.
+### Mouse
 
-**`iMouse` (Shadertoy rules)** — **`xy`** are the cursor in pixels **only while the left button is held**; when it is **up**, **`xy` are negative** (we use **`−1`**). **`zw`** carry the click position while dragging. Feeding live **`xy` all the time** breaks shaders that rotate with **`iMouse.x / iResolution.x`** (e.g. Alien Core / `4tcXRr`).
+`iMouse` follows Shadertoy's rules: `xy` is the cursor position only **while the left button is held**, and
+negative (`-1`) when it is up; `zw` carry the click position while dragging. Feeding the live cursor all the
+time breaks shaders that rotate with `iMouse.x / iResolution.x` (the alien core, `4tcXRr`, is one).
 
-**Texture inputs (`sampler2D` iChannel0–3)** — not automatic from Shadertoy JSON here; you wire files or built-ins:
+### Textures
 
-- **`TISH_SHADER_CHANNEL_DIR`** — base directory for relative paths (default **`.`**).
-- **`TISH_SHADER_CHANNEL0`** … **`TISH_SHADER_CHANNEL3`** — filesystem paths to PNG/JPEG/GIF (override comments for that slot).
-- Or a line near the top of the shader: **`// iChannel0: relative/noise.png`** (same for 1–3). Env wins if both are set.
-- **`// iChannel0: builtin:noise`** — procedural tiling grayscale noise (**256²**), similar to using a noise slot on the site. If **iChannel0** is unset and the source **calls** `texture(iChannel0,…)` / `textureLod` / `texelFetch`, we **auto-bind** this unless **`TISH_SHADER_AUTO_CHANNEL0_NOISE=0`**.
+`iChannel0`–`3` default to 1×1 black. To bind images:
 
-**Not implemented** (would need parsing a full Shadertoy export or similar): buffer passes, cubemaps, keyboard/sound/mic inputs, remote texture URLs.
+- A comment near the top of the shader: `// iChannel0: relative/noise.png` (same for 1–3).
+- Or environment variables `TISH_SHADER_CHANNEL0` … `TISH_SHADER_CHANNEL3` (PNG, JPEG or GIF), which win over
+  comments. Relative paths resolve against `TISH_SHADER_CHANNEL_DIR` (default `.`).
+- `// iChannel0: builtin:noise` binds a 256² tiling grayscale noise texture, like a noise slot on the site. If
+  `iChannel0` is unset and the shader samples it, this is bound automatically
+  (`TISH_SHADER_AUTO_CHANNEL0_NOISE=0` to turn that off).
 
-## Tish API (`tish:shadertoy`)
+`iChannelTime` is `0` for image channels and `iTime` for the default slot.
 
-- **`run(code)`** — opens the native viewer (blocks until the window closes).
+### Not supported
 
-The CLI script uses **`readFile`** from **`tish:fs`** to load the path you pass on the command line.
+Multipass shaders (buffer passes), cubemaps, keyboard, sound and microphone inputs, and remote texture URLs.
+Only the single image pass runs.
 
-## MVP limits
+## Project layout
 
-- **Shadertoy preprocessor:** the viewer defines **`HW_PERFORMANCE`** to **`1`** when your shader does not (the website sets this; without it, `#if HW_PERFORMANCE==0` can fail to compile on desktop GL).
-- **Single full-screen fragment pass** — no buffer/sound multipass pipeline.
-- **iChannel0–3** default to **1×1 black**; optional **image files** via env or `// iChannelN:` comments (see above). Cubemaps / buffer inputs / URLs are not supported.
-- Uniforms include `iResolution`, `iTime`, `iTimeDelta`, `iFrame`, `iMouse`, `iDate`, `iSampleRate`, `iChannelResolution`, `iChannelTime`, `iFrameRate`, and `iGlobalTime` (alias of `iTime`). See the [VS Code Shader Toy extension](https://github.com/stevensona/shader-toy) for `mainImage` conventions.
+| Path | |
+|---|---|
+| [`src/main.tish`](src/main.tish) | The CLI script: reads the shader named on the command line and runs a pumped loop. |
+| [`src/lib.rs`](src/lib.rs) | The `tish:shadertoy` module and shader preamble. |
+| [`src/renderer.rs`](src/renderer.rs) | The OpenGL full-screen fragment pass: uniforms, texture channels and drawing. |
+| [`src/pump_session.rs`](src/pump_session.rs) | The non-blocking `openPumpable` / `pump` session. |
+| [`src/compat.rs`](src/compat.rs) | The WebGL-to-desktop source rewrites. |
+| [`src/bin/tish-shadertoy-run.rs`](src/bin/tish-shadertoy-run.rs) | The runner binary: a Tish interpreter with `tish:shadertoy` built in. |
+| [`crates/tish_winint`](crates/tish_winint) | The winit + glutin + glow window shell and hotkeys. |
+| [`shaders/`](shaders/) | Example shaders, with credits. |
 
 ## License
 
-MIT
+The viewer is [MIT](LICENSE). **The shaders and textures are not** — each keeps its author's license, most of
+them Shadertoy's default CC BY-NC-SA 3.0. See [`shaders/README.md`](shaders/README.md) for authors, links and
+licenses.

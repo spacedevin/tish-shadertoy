@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "winit + glutin + glow window shell for Tish native hosts (tish:winint)"
 license = "MIT"
-repository = "https://github.com/tishlang/tish-shadertoy"
+repository = "https://github.com/spacedevin/tish-shadertoy"
 
 [dependencies]
 winit = { version = "0.30.13", default-features = true, features = ["rwh_06"] }

@@ -68,6 +68,7 @@ pub fn window_attributes(title: &str, size: PhysicalSize<u32>) -> WindowAttribut
         .with_min_inner_size(PhysicalSize::new(1, 1))
 }
 
+#[allow(clippy::large_enum_variant)] // one-shot init state; boxing adds noise for little gain
 pub enum GlDisplayInit {
     Builder(DisplayBuilder),
     Done,
@@ -84,14 +85,25 @@ pub trait GlWindowHost: 'static {
 
     fn on_gl_ready(&mut self, gl: &Rc<glow::Context>) -> Result<(), String>;
 
-    fn on_redraw(&mut self, gl: &Rc<glow::Context>, width: u32, height: u32) -> Result<(), String>;
+    fn on_redraw(
+        &mut self,
+        gl: &Rc<glow::Context>,
+        window: &Window,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String>;
 
     fn on_viewport_resized(&mut self, gl: &glow::Context, width: u32, height: u32);
 
     /// Keyboard, mouse, and any events not handled by [`GlWindowApp`].
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent);
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Window,
+        event: WindowEvent,
+    );
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop);
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop, window: &Window);
 
     /// Called when the window app is dropped so hosts can delete GL objects before the context is destroyed.
     fn tear_down_gl(&mut self, _gl: &Rc<glow::Context>) {}
@@ -134,6 +146,17 @@ impl<H: GlWindowHost> GlWindowApp<H> {
 
     pub fn exit_result_ref(&self) -> &Result<(), String> {
         &self.exit_result
+    }
+
+    /// Window after [`ApplicationHandler::resumed`] has created the surface (else `None`).
+    pub fn window(&self) -> Option<&Window> {
+        self.state.as_ref().map(|s| &s.window)
+    }
+
+    /// Mutable host + GL context after GL init (for reload, title tweaks from the host thread).
+    pub fn host_and_gl_mut(&mut self) -> Option<(&mut H, &Rc<glow::Context>)> {
+        let gl = self.gl.as_ref()?;
+        Some((&mut self.host, gl))
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, msg: String) {
@@ -272,20 +295,18 @@ impl<H: GlWindowHost> ApplicationHandler for GlWindowApp<H> {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
-                let (ww, hh) = match self.state.as_ref() {
-                    Some(s) => {
-                        let sz = s.window.inner_size();
-                        (sz.width, sz.height)
-                    }
-                    None => return,
+                let Some(st) = self.state.as_ref() else {
+                    return;
                 };
+                let sz = st.window.inner_size();
+                let (ww, hh) = (sz.width, sz.height);
                 if ww == 0 || hh == 0 {
                     return;
                 }
                 let Some(gl) = self.gl.clone() else {
                     return;
                 };
-                if let Err(e) = self.host.on_redraw(&gl, ww, hh) {
+                if let Err(e) = self.host.on_redraw(&gl, &st.window, ww, hh) {
                     self.fail(event_loop, e);
                     return;
                 }
@@ -309,12 +330,18 @@ impl<H: GlWindowHost> ApplicationHandler for GlWindowApp<H> {
                     }
                 }
             }
-            other => self.host.window_event(event_loop, other),
+            other => {
+                if let Some(s) = self.state.as_ref() {
+                    self.host.window_event(event_loop, &s.window, other);
+                }
+            }
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.host.about_to_wait(event_loop);
+        if let Some(s) = self.state.as_ref() {
+            self.host.about_to_wait(event_loop, &s.window);
+        }
         event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
     }
 }
