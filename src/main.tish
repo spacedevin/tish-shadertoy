@@ -1,8 +1,13 @@
-// CLI: cargo run --bin tish-shadertoy-run -- src/main.tish <path-to-glsl-file>
+// CLI examples (shader path is always the last argument):
+//   cargo run --bin tish-shadertoy-run -- src/main.tish ./shaders/foo.glsl
+//   ./tish_out --feature all ./shaders/foo.glsl
+//
+// Pump loop: Tish keeps control between frames (native compile + this runner).
+// For a one-liner that blocks until close, use: import { run } from "tish:shadertoy" then run(code).
 
-import { readFile } from "tish:fs"
-import { process } from "tish:process"
-import { run } from "tish:shadertoy"
+import { readFile } from 'tish:fs'
+import { process } from 'tish:process'
+import { openPumpable, pump, setWindowTitle, reloadShader } from 'tish:shadertoy'
 
 fn die(msg) {
   console.error(msg)
@@ -10,14 +15,36 @@ fn die(msg) {
 }
 
 let argv = process.argv
-if (argv.length < 3) {
-  die("Usage: tish-shadertoy-run src/main.tish <shader-file>")
+// Last arg = shader path so this works for:
+//   cargo run --bin tish-shadertoy-run -- src/main.tish ./shader.glsl
+//   ./tish_out --feature all ./shaders/foo.glsl   (argv[2] would wrongly be "all")
+if (argv.length < 2) {
+  die('Usage: <runner> … <shader-file.glsl> — shader path must be the last argument')
 }
 
-let path = argv[2]
+let path = argv[argv.length - 1]
+if (path.endsWith('.tish')) {
+  die(
+    'Last argument looks like a .tish script; pass the GLSL shader path last (e.g. … ./shaders/foo.glsl)'
+  )
+}
 let code = readFile(path)
-if (code.startsWith("Error: ")) {
+if (code.startsWith('Error: ')) {
   die(code)
 }
 
-run(code)
+if (!openPumpable(code)) {
+  die('openPumpable failed (already open or GL init error — see stderr)')
+}
+
+// Example: interleave native work here (HTTP queue, timers, etc.).
+// pump() defaults to ~1 ms wait inside winit (see TISH_SHADER_PUMP_TIMEOUT_MS) so this loop is not CPU-busy.
+// onKeyDown in openPumpable(code, { onKeyDown: (e) => … }) works under `tish build`, not AST `fn` in this runner.
+let n = 0
+while (pump()) {
+  n = n + 1
+  if (n === 1) {
+    setWindowTitle('Tish Shadertoy (pump loop)')
+  }
+  // reloadShader(newSource) — e.g. after reading a file or receiving HTTP POST (wire that to this loop).
+}

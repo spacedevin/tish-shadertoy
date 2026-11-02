@@ -1,0 +1,16 @@
+[package]
+name = "tish-winint"
+version = "0.1.0"
+edition = "2021"
+description = "winit + glutin + glow window shell for Tish native hosts (tish:winint)"
+license = "MIT"
+repository = "https://github.com/spacedevin/tish-shadertoy"
+
+[dependencies]
+winit = { version = "0.30.13", default-features = true, features = ["rwh_06"] }
+glutin = "0.32.3"
+glutin-winit = "0.5.0"
+raw-window-handle = "0.6.2"
+glow = "0.17.0"
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.1"

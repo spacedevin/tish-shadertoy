@@ -1,11 +1,20 @@
-//! Keyboard bindings loaded from **`hotkeys.toml`** (Milkdrop-style).
-//!
-//! Path: **`hotkeys.toml`** in the current working directory, or **`TISH_SHADER_HOTKEYS_PATH`**.
+//! Keyboard bindings from a TOML file (Milkdrop-style).
 
 use std::path::Path;
 
 use serde::Deserialize;
 use winit::keyboard::{Key, NamedKey};
+
+/// Where to load hotkeys from and how to log parse errors.
+#[derive(Debug, Clone)]
+pub struct HotkeysLoadOptions {
+    /// Env var for override path (e.g. `TISH_SHADER_HOTKEYS_PATH`).
+    pub path_env_var: &'static str,
+    /// Used when the env var is unset (e.g. `hotkeys.toml`).
+    pub default_path: &'static str,
+    /// Prefix for `eprintln!` messages (e.g. `tish-shadertoy`).
+    pub log_prefix: &'static str,
+}
 
 #[derive(Debug, Deserialize, Default)]
 struct FileRoot {
@@ -52,17 +61,18 @@ impl From<FileRoot> for HotkeysConfig {
     }
 }
 
-pub fn load() -> HotkeysConfig {
-    let path_str = std::env::var("TISH_SHADER_HOTKEYS_PATH").unwrap_or_else(|_| "hotkeys.toml".into());
+pub fn load(opts: &HotkeysLoadOptions) -> HotkeysConfig {
+    let path_str =
+        std::env::var(opts.path_env_var).unwrap_or_else(|_| opts.default_path.to_string());
     let path_trim = path_str.trim().to_string();
     let path = Path::new(&path_trim);
     if path.is_file() {
         match std::fs::read_to_string(path) {
             Ok(s) => match toml::from_str::<FileRoot>(&s) {
                 Ok(root) => return root.into(),
-                Err(e) => eprintln!("tish-shadertoy: {}: parse error: {e}", path.display()),
+                Err(e) => eprintln!("{}: {}: parse error: {e}", opts.log_prefix, path.display()),
             },
-            Err(e) => eprintln!("tish-shadertoy: {}: {e}", path.display()),
+            Err(e) => eprintln!("{}: {}: {e}", opts.log_prefix, path.display()),
         }
     }
     HotkeysConfig::default()
